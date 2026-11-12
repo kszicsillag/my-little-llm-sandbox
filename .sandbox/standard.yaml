@@ -1,0 +1,28 @@
+# ACA Sandbox manifest: STANDARD profile (devcontainer "standard" approach).
+# Rendered by .sandbox/sbx.sh (envsubst) and applied with `aca sandbox apply`.
+#
+# - Agent and gh log in interactively inside the sandbox; login state lives on the
+#   per-repo DataDisk volume (/persist), so it survives sandbox deletion.
+# - Egress is open (default Allow); the agent's own permission prompts are the control.
+# - Disk budget per tier = root disk + volumes (S: 10 GiB total).
+diskId: ${SBX_DISK_ID}
+resources:
+  cpu: ${SBX_CPU}
+  memory: ${SBX_MEMORY}
+  disk: ${SBX_ROOT_DISK}
+labels:
+  sbx: ${SBX_NAME}
+  profile: standard
+volumes:
+  - volumeName: ${SBX_VOLUME}
+    mountpoint: /persist
+environment:
+  SBX_PROFILE: standard
+  GIT_CONFIG_GLOBAL: /home/dev/.config/git/config
+lifecycle:
+  autoSuspendPolicy:
+    enabled: true
+    interval: 900        # idle seconds before suspend
+    mode: Disk           # Memory mode is rejected when a DataDisk volume is attached
+egressPolicy:
+  defaultAction: Allow

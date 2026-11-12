@@ -160,6 +160,10 @@ resource "azapi_resource" "sandbox_vnet_connection" {
   type      = "Microsoft.App/sandboxGroups/vnetConnections@2026-07-01"
   name      = "default"
   parent_id = azapi_resource.sandbox_group.id
+  location  = azurerm_resource_group.this.location # required by the API although undocumented
+
+  # ARM returns subnetId lower-cased; avoid a perpetual (and immutable-field) diff.
+  ignore_casing = true
 
   schema_validation_enabled = false
 
