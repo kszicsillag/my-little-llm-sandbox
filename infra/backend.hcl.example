@@ -1,0 +1,4 @@
+# Copy to backend.hcl and run: tofu init -backend-config=backend.hcl
+subscription_id      = "00000000-0000-0000-0000-000000000000"
+resource_group_name  = "rg-tfstate"
+storage_account_name = "sttfstatexxxxxxxx"

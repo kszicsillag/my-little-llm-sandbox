@@ -6,3 +6,4 @@
 crash.log
 .terraform.tfstate.lock.info
 tfplan
+backend.hcl

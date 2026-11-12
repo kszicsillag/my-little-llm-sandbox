@@ -19,7 +19,8 @@ Sandboxes themselves (disk images, sandboxes, egress policies, snapshots) are **
 az login
 cd infra
 cp terraform.tfvars.example terraform.tfvars   # optional
-tofu init
+cp backend.hcl.example backend.hcl             # fill in the state storage account
+tofu init -backend-config=backend.hcl
 tofu plan -out tfplan
 tofu apply tfplan
 ```
@@ -41,4 +42,4 @@ Role assignments can take about a minute to propagate.
 - `schema_validation_enabled = false` is set on the azapi resources because azapi 2.13 has no embedded schema for `sandboxGroups` yet. ARM still validates the request.
 - Sandbox groups don't need a managed environment. By default the environment is created next to the group but not linked to it. Set `link_sandbox_group_to_environment = true` to set `properties.environmentId`. Once set, the link can't be changed or removed, so changing it replaces the sandbox group.
 - The sandbox subnet and the environment subnet are separate. Each must be delegated to `Microsoft.App/environments` and can serve only one consumer.
-- State is local. See the commented `azurerm` backend in `versions.tf` if you share it.
+- State is kept in Azure Blob Storage (`azurerm` backend, Entra ID auth, no shared keys). The state account has blob versioning and 30-day soft delete, and you need `Storage Blob Data Contributor` on it.

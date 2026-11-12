@@ -16,14 +16,13 @@ terraform {
     }
   }
 
-  # Local state by default. For shared use, switch to the azurerm backend, e.g.:
-  # backend "azurerm" {
-  #   resource_group_name  = "rg-tfstate"
-  #   storage_account_name = "sttfstatexxxx"
-  #   container_name       = "tfstate"
-  #   key                  = "aca-sandboxes.tfstate"
-  #   use_azuread_auth     = true
-  # }
+  # Remote state in Azure Blob Storage (Entra ID auth, no shared keys).
+  # Account details live in backend.hcl (gitignored): tofu init -backend-config=backend.hcl
+  backend "azurerm" {
+    container_name   = "tfstate"
+    key              = "aca-sandboxes.tfstate"
+    use_azuread_auth = true
+  }
 }
 
 provider "azurerm" {
