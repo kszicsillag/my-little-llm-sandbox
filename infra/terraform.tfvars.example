@@ -1,0 +1,14 @@
+# Copy to terraform.tfvars and adjust.
+# subscription_id = "00000000-0000-0000-0000-000000000000"
+location                = "swedencentral"
+name_prefix             = "llmsbx"
+environment             = "dev"
+enable_vnet_integration = true
+
+enable_managed_environment        = true
+aca_env_internal_only             = false
+link_sandbox_group_to_environment = false # irreversible once true
+
+# sandbox_data_owner_principals = {
+#   devs = { object_id = "<entra-group-object-id>", type = "Group" }
+# }
