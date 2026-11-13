@@ -4,6 +4,7 @@
 # Files executed or parsed on Linux (sandbox images, bash) must stay LF even on Windows checkouts.
 *.sh        text eol=lf
 Dockerfile  text eol=lf
+*.Dockerfile text eol=lf
 *.yaml      text eol=lf
 *.yml       text eol=lf
 *.tf        text eol=lf
