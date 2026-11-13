@@ -52,15 +52,33 @@ Bake dependencies into an image only when there's a reason to:
 ### VS Code (Remote Tunnels)
 
 ```sh
-.sandbox/sbx.sh shell repo     # once: code tunnel user login --provider microsoft
+SBX_VSCODE=1 .sandbox/sbx.sh up hardened <repo-url> repo   # hardened only: allow the tunnel hosts for this sandbox
+.sandbox/sbx.sh shell repo     # once per volume (standard) or per rebuild (hardened): code tunnel user login --provider microsoft
 .sandbox/sbx.sh code repo      # starts the tunnel "sbx-repo"
 ```
 
-Connect from VS Code: install the *Remote - Tunnels* extension, then go to Remote Explorer → Tunnels → `sbx-repo`, or open `https://vscode.dev/tunnel/sbx-repo`. Ports forward to your `localhost`, so the MkDocs preview is at `http://localhost:8000/...`.
+Connect from desktop VS Code: install the *Remote - Tunnels* extension, then go to Remote Explorer → Tunnels → `sbx-repo`. Or open `https://vscode.dev/tunnel/sbx-repo`.
 
 - Use the **Microsoft** login provider. GitHub login conflicts with the hardened profile's `github.com` header injection.
 - `sbx.sh code` sets idle auto-suspend to 1 h, because tunnel traffic doesn't count as activity. Disk-mode suspend stops the tunnel.
-- **Standard** keeps the tunnel login on the volume. **Hardened** doesn't, so you log in again after each rebuild. Hardened also needs the tunnel hosts allowed: uncomment the VS Code block in `hardened*.yaml`.
+- **Standard** keeps the tunnel login on the volume. **Hardened** doesn't, so you log in again after each rebuild.
+- `SBX_VSCODE=1` enables the commented-out VS Code block in `hardened*.yaml`, for that sandbox only. Without it the hardened profiles block the tunnel.
+- **Forwarded ports go through dev tunnels, even in desktop VS Code.** The Ports tab shows `https://<id>-<port>.<region>.devtunnels.ms`, not `localhost`. That works, but the first load is slow. Use `sbx.sh preview` (below) for a fast preview.
+- **Extensions get the injected GitHub token.** Injection is per host, so any extension that calls `api.github.com` (GitHub, Pull Requests) is authenticated as you, within the PAT's scope. Be selective about extensions in hardened sandboxes.
+- **Copilot doesn't work in hardened** (`*.githubcopilot.com` is blocked), and neither does Microsoft/Copilot telemetry. Allow `api.githubcopilot.com`, `api.individual.githubcopilot.com` and `exp.individual.githubcopilot.com` if you want it.
+
+### Preview a web server (`sbx.sh preview`)
+
+```sh
+.sandbox/sbx.sh preview repo [port] [email]   # default port 8000, email = your `az account show` user
+# → https://<sandbox-id>--<port>.<region>.adcproxy.io   (open in the browser, e.g. append /skalazhato/)
+```
+
+This exposes the port through the sandbox's own ingress, which doesn't go through dev tunnels or the egress proxy. It's restricted to one Entra identity in your tenant and is never anonymous.
+
+- Verified with `mkdocs serve`: fast, browser sign-in works, and **live reload works**. MkDocs uses HTTP long-polling, not WebSockets.
+- `aca sandbox port add --email` doesn't work as of aca 1.0.0-preview.5: it omits the required `auth.entraId.tenantIds` and gets a `400`. `sbx.sh preview` calls the same data-plane endpoint with `az rest` and adds your tenant.
+- Plain `aca sandbox port add` without `--email` creates an **anonymous** port. Don't use it for anything private.
 
 **Hardened** profiles. There are two, and they differ only in how Claude is billed:
 

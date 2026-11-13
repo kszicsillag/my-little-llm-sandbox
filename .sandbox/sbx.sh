@@ -7,6 +7,7 @@
 #   sbx.sh shell <name>                  interactive shell
 #   sbx.sh exec <name> <command...>      run a command
 #   sbx.sh code <name>                   start a VS Code Remote Tunnel (connect from desktop VS Code)
+#   sbx.sh preview <name> [port] [email] expose a port via sandbox ingress, Entra auth (default 8000, az login email)
 #   sbx.sh ls                            list sandboxes created by sbx.sh
 #   sbx.sh down <name>                   delete the sandbox, KEEP the volume ("rebuild")
 #   sbx.sh purge <name>                  delete the sandbox AND its volume
@@ -67,6 +68,11 @@ cmd_up() {
   local manifest; manifest="$(mktemp --suffix=.yaml)"
   envsubst '${SBX_DISK_ID} ${SBX_CPU} ${SBX_MEMORY} ${SBX_ROOT_DISK} ${SBX_NAME} ${SBX_VOLUME}' \
     <"$HERE/$profile.yaml" >"$manifest"
+  # SBX_VSCODE=1: enable the commented-out VS Code tunnel allowlist block (hardened profiles).
+  if [ "${SBX_VSCODE:-0}" = 1 ]; then
+    sed -i -E 's/^(\s*)# (- \{ name: (vscode-|ms-login))/\1\2/' "$manifest"
+    echo "SBX_VSCODE=1: VS Code tunnel hosts allowed"
+  fi
   "$ACA" sandbox apply --file "$manifest"
   rm -f "$manifest"
 
@@ -88,8 +94,36 @@ cmd_code() {  # <name>
     echo "(use the Microsoft provider: GitHub login conflicts with the hardened profile's github.com header injection)"
     exit 1
   fi
-  "$ACA" sandbox exec --id "$id" -c "pgrep -f 'code tunnel' >/dev/null || (nohup code tunnel --accept-server-license-terms --name $tunnel >/tmp/code-tunnel.log 2>&1 &); sleep 5; tail -3 /tmp/code-tunnel.log"
+  # PID file, not pgrep -f: the exec'd shell's own command line would match the pattern.
+  "$ACA" sandbox exec --id "$id" -c "if [ -f /tmp/code-tunnel.pid ] && kill -0 \$(cat /tmp/code-tunnel.pid) 2>/dev/null; then echo 'tunnel already running'; else nohup code tunnel --accept-server-license-terms --name $tunnel >/tmp/code-tunnel.log 2>&1 & echo \$! >/tmp/code-tunnel.pid; sleep 8; fi; tail -4 /tmp/code-tunnel.log"
   echo "connect: VS Code > Remote Explorer > Tunnels > $tunnel   (or https://vscode.dev/tunnel/$tunnel)"
+}
+
+cmd_preview() {  # <name> [port] [email]
+  local name="${1:?name}" port="${2:-8000}" email="${3:-}" id
+  id="$(require_sandbox "$name")"
+  # Default: the signed-in Azure CLI user (the Entra identity that manages this sandbox group).
+  [ -n "$email" ] || email="$(az account show --query user.name -o tsv 2>/dev/null)"
+  [ -n "$email" ] || die "no email given and none from 'az account show'"
+  # Never anonymous: restrict the ingress port to one Entra identity in this tenant.
+  # `aca sandbox port add --email` omits auth.entraId.tenantIds, which the API requires,
+  # so call the data plane directly (same endpoint the CLI uses).
+  local cfg sub rg group region tenant
+  cfg="$("$ACA" config show -o json)"
+  sub="${ACA_SUBSCRIPTION:-$(json_pick "d['sandbox'].get('subscription')" <<<"$cfg")}"
+  rg="${ACA_RESOURCE_GROUP:-$(json_pick "d['sandbox'].get('resource_group')" <<<"$cfg")}"
+  group="${ACA_SANDBOX_GROUP:-$(json_pick "d['sandbox'].get('group')" <<<"$cfg")}"
+  region="${ACA_REGION:-$(json_pick "d['sandbox'].get('region')" <<<"$cfg")}"
+  tenant="$(az account show --query tenantId -o tsv)"
+  [ -n "$sub" ] && [ -n "$rg" ] && [ -n "$group" ] && [ -n "$region" ] \
+    || die "could not resolve subscription / resource group / sandbox group / region from 'aca config show'"
+
+  "$ACA" sandbox port remove --id "$id" --port "$port" >/dev/null 2>&1 || true
+  MSYS_NO_PATHCONV=1 az rest --method post --resource https://management.azuredevcompute.io \
+    --url "https://management.$region.azuredevcompute.io/subscriptions/$sub/resourceGroups/$rg/sandboxGroups/$group/sandboxes/$id/ports/add?api-version=2026-02-01-preview" \
+    --body "{\"port\":$port,\"auth\":{\"entraId\":{\"enabled\":true,\"emails\":[\"$email\"],\"tenantIds\":[\"$tenant\"]}}}" -o json \
+    | json_pick "next((p['url'] for p in (d if isinstance(d,list) else d.get('ports',[d])) if p.get('port')==$port), None)"
+  echo "(Entra ID auth: $email, tenant $tenant)"
 }
 
 cmd_secrets() {
@@ -116,6 +150,7 @@ case "${1:-}" in
   up)      shift; cmd_up "$@" ;;
   shell)   "$ACA" sandbox shell --id "$(require_sandbox "${2:?name}")" ;;
   code)    cmd_code "${2:-}" ;;
+  preview) shift; cmd_preview "$@" ;;
   exec)    n="${2:?name}"; shift 2; "$ACA" sandbox exec --id "$(require_sandbox "$n")" -c "$*" ;;
   ls)      "$ACA" sandbox list ;;
   down)    "$ACA" sandbox delete --id "$(require_sandbox "${2:?name}")" --yes ;;
@@ -123,5 +158,5 @@ case "${1:-}" in
            [ -z "$id" ] || "$ACA" sandbox delete --id "$id" --yes
            "$ACA" sandboxgroup volume delete --name "persist-$n" ;;
   secrets) cmd_secrets ;;
-  *)       sed -n '2,15p' "$0"; exit 2 ;;
+  *)       sed -n '2,16p' "$0"; exit 2 ;;
 esac
