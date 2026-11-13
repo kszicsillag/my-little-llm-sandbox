@@ -11,6 +11,10 @@ ARG USERNAME=dev
 ARG USER_UID=1000
 # Pinned Claude Code release; bump deliberately and rebuild the disk image.
 ARG CLAUDE_CODE_VERSION=2.1.322
+# Pinned VS Code standalone CLI (for `code tunnel`). Get version + sha256 from
+# https://update.code.visualstudio.com/api/versions/<version>/cli-linux-x64/stable
+ARG VSCODE_CLI_VERSION=1.146.0
+ARG VSCODE_CLI_SHA256=f6240bd0d53e7e1ae7bff206221b7aa2ce28f7ffa9a9197289957b32a41368a0
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8
@@ -29,6 +33,14 @@ RUN apt-get update \
  && apt-get update \
  && apt-get install -y --no-install-recommends gh nodejs \
  && rm -rf /var/lib/apt/lists/*
+
+# VS Code CLI (Remote Tunnels), checksum-verified.
+RUN curl -fsSL -o /tmp/vscode-cli.tar.gz \
+      "https://update.code.visualstudio.com/${VSCODE_CLI_VERSION}/cli-linux-x64/stable" \
+ && echo "${VSCODE_CLI_SHA256}  /tmp/vscode-cli.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/vscode-cli.tar.gz -C /usr/local/bin code \
+ && rm /tmp/vscode-cli.tar.gz \
+ && code --version
 
 # Non-root user (ubuntu:24.04 ships an "ubuntu" user with UID 1000; replace it).
 RUN userdel -r ubuntu 2>/dev/null || true \

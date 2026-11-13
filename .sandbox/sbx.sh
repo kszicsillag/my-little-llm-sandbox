@@ -2,10 +2,11 @@
 # sbx.sh: devcontainer-style workflow for ACA Sandboxes.
 #
 #   sbx.sh image                         build the base disk image from .sandbox/image
-#   sbx.sh up <standard|hardened> <repo-url> [name]
+#   sbx.sh up <standard|hardened|hardened-apikey> <repo-url> [name]
 #                                        create volume (once) + sandbox, run bootstrap
 #   sbx.sh shell <name>                  interactive shell
 #   sbx.sh exec <name> <command...>      run a command
+#   sbx.sh code <name>                   start a VS Code Remote Tunnel (connect from desktop VS Code)
 #   sbx.sh ls                            list sandboxes created by sbx.sh
 #   sbx.sh down <name>                   delete the sandbox, KEEP the volume ("rebuild")
 #   sbx.sh purge <name>                  delete the sandbox AND its volume
@@ -20,7 +21,7 @@ command -v "$ACA" >/dev/null 2>&1 || ACA="$HOME/.aca/bin/aca"
 PY="$(command -v python3 || command -v python)"
 
 # Sizing. Tier disk budget = root disk + volumes (S: 0.5 vCPU / 1 GiB / 10 GiB total).
-export SBX_IMAGE="${SBX_IMAGE:-agent-base-v2}"
+export SBX_IMAGE="${SBX_IMAGE:-agent-base-v3}"
 export SBX_CPU="${SBX_CPU:-500m}"
 export SBX_MEMORY="${SBX_MEMORY:-1024Mi}"
 export SBX_ROOT_DISK="${SBX_ROOT_DISK:-5Gi}"
@@ -70,18 +71,41 @@ cmd_up() {
   rm -f "$manifest"
 
   local id; id="$(require_sandbox "$name")"
-  "$ACA" sandbox exec --id "$id" -c "sandbox-bootstrap $profile '$repo'"
+  # hardened-* variants differ only in egress/auth; bootstrap is the same.
+  "$ACA" sandbox exec --id "$id" -c "sandbox-bootstrap ${profile%%-*} '$repo'"
   echo "ready: sbx.sh shell $name"
 }
 
+cmd_code() {  # <name>
+  local name="${1:?name}" id tunnel
+  id="$(require_sandbox "$name")"
+  tunnel="$(printf 'sbx-%s' "$name" | tr 'A-Z_.' 'a-z--' | cut -c1-20)"   # tunnel names: <=20 chars
+  # Tunnel traffic does not count as sandbox activity; give idle suspend more room while coding.
+  "$ACA" sandbox lifecycle set --id "$id" --auto-suspend enable --idle-timeout-seconds 3600 --mode Disk >/dev/null
+  if ! "$ACA" sandbox exec --id "$id" -c 'code tunnel user show >/dev/null 2>&1'; then
+    echo "VS Code tunnel is not logged in yet. Run once (device code login, Microsoft account):"
+    echo "  sbx.sh shell $name   then:   code tunnel user login --provider microsoft"
+    echo "(use the Microsoft provider: GitHub login conflicts with the hardened profile's github.com header injection)"
+    exit 1
+  fi
+  "$ACA" sandbox exec --id "$id" -c "pgrep -f 'code tunnel' >/dev/null || (nohup code tunnel --accept-server-license-terms --name $tunnel >/tmp/code-tunnel.log 2>&1 &); sleep 5; tail -3 /tmp/code-tunnel.log"
+  echo "connect: VS Code > Remote Explorer > Tunnels > $tunnel   (or https://vscode.dev/tunnel/$tunnel)"
+}
+
 cmd_secrets() {
-  local tok key
+  local tok oauth key
   read -r -s -p "GitHub fine-grained token (empty = skip): " tok; echo
   if [ -n "$tok" ]; then
     printf 'token=%s\nbasic=%s\n' "$tok" "$(printf 'x-access-token:%s' "$tok" | base64 | tr -d '\n')" \
       | "$ACA" sandboxgroup secret set --name github --from-stdin
   fi
-  read -r -s -p "Anthropic API key (empty = skip): " key; echo
+  # hardened (subscription): token from `claude setup-token` on a machine logged in to Pro/Max.
+  read -r -s -p "Claude subscription token from 'claude setup-token' (empty = skip): " oauth; echo
+  if [ -n "$oauth" ]; then
+    printf 'oauth=%s\n' "$oauth" | "$ACA" sandboxgroup secret set --name anthropic --from-stdin
+  fi
+  # hardened-apikey: Console API key, billed per token, separate from the subscription.
+  read -r -s -p "Anthropic API key, pay-as-you-go (empty = skip): " key; echo
   if [ -n "$key" ]; then
     printf 'key=%s\n' "$key" | "$ACA" sandboxgroup secret set --name anthropic --from-stdin
   fi
@@ -91,6 +115,7 @@ case "${1:-}" in
   image)   cmd_image ;;
   up)      shift; cmd_up "$@" ;;
   shell)   "$ACA" sandbox shell --id "$(require_sandbox "${2:?name}")" ;;
+  code)    cmd_code "${2:-}" ;;
   exec)    n="${2:?name}"; shift 2; "$ACA" sandbox exec --id "$(require_sandbox "$n")" -c "$*" ;;
   ls)      "$ACA" sandbox list ;;
   down)    "$ACA" sandbox delete --id "$(require_sandbox "${2:?name}")" --yes ;;

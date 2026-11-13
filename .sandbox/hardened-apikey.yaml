@@ -1,0 +1,94 @@
+# ACA Sandbox manifest: HARDENED profile, API-KEY variant.
+# Rendered by .sandbox/sbx.sh (envsubst) and applied with `aca sandbox apply`.
+#
+# Claude auth: Anthropic API key (Console, pay-as-you-go per token, billed separately
+# from any Claude subscription), injected as `x-api-key`.
+# For subscription (Pro/Max) usage use hardened.yaml instead.
+#
+# - No tokens inside the sandbox. The egress proxy injects credentials per request
+#   from sandbox-group secrets (create them with `sbx.sh secrets`).
+# - Default Deny; only listed hosts are reachable. Rules are first-match-wins:
+#   Deny/Transform rules must come before the broader Allow for the same host.
+# - Placeholders in the environment exist only because some CLIs refuse to start
+#   without a token; the proxy overwrites the header with the real value.
+diskId: ${SBX_DISK_ID}
+resources:
+  cpu: ${SBX_CPU}
+  memory: ${SBX_MEMORY}
+  disk: ${SBX_ROOT_DISK}
+labels:
+  sbx: ${SBX_NAME}
+  profile: hardened-apikey
+volumes:
+  - volumeName: ${SBX_VOLUME}
+    mountpoint: /persist
+environment:
+  SBX_PROFILE: hardened
+  GIT_CONFIG_GLOBAL: /home/dev/.config/git/config
+  ANTHROPIC_API_KEY: injected-by-egress-proxy
+  GH_TOKEN: injected-by-egress-proxy
+  # Skip telemetry, error reporting and other non-essential calls (Datadog, event logging):
+  # fewer egress destinations and fewer requests carrying the injected credential.
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+lifecycle:
+  autoSuspendPolicy:
+    enabled: true
+    interval: 900
+    mode: Disk           # Memory mode is rejected when a DataDisk volume is attached
+egressPolicy:
+  defaultAction: Deny
+  trafficInspection: Full          # TLS inspection is required for header injection
+  rules:
+    # --- org-style blocks (never allowed, evaluated first) ---
+    - name: block-repo-delete
+      match: { host: "api.github.com", path: "/repos/*", methods: [DELETE] }
+      action: { type: Deny }
+
+    # --- credential injection ---
+    - name: github-api-token
+      match: { host: "api.github.com" }
+      action:
+        type: Transform
+        headers:
+          - operation: Set
+            name: Authorization
+            valueRef: { secretRef: { secretId: github, secretKey: token, format: "Bearer {value}" } }
+    - name: github-git-https
+      match: { host: "github.com" }
+      action:
+        type: Transform
+        headers:
+          - operation: Set
+            name: Authorization
+            # secret key "basic" = base64("x-access-token:<token>"), see sbx.sh secrets
+            valueRef: { secretRef: { secretId: github, secretKey: basic, format: "Basic {value}" } }
+    - name: anthropic-api-key
+      match: { host: "api.anthropic.com" }
+      action:
+        type: Transform
+        headers:
+          - operation: Set
+            name: x-api-key
+            valueRef: { secretRef: { secretId: anthropic, secretKey: key } }
+
+    # --- allowlist ---
+    - { name: github-content, match: { host: "*.githubusercontent.com" }, action: { type: Allow } }
+    - { name: github-codeload, match: { host: "codeload.github.com" }, action: { type: Allow } }
+    - { name: anthropic, match: { host: "*.anthropic.com" }, action: { type: Allow } }
+    - { name: npm, match: { host: "registry.npmjs.org" }, action: { type: Allow } }
+    - { name: pypi, match: { host: "pypi.org" }, action: { type: Allow } }
+    - { name: pypi-files, match: { host: "files.pythonhosted.org" }, action: { type: Allow } }
+    - { name: ubuntu-apt, match: { host: "*.ubuntu.com" }, action: { type: Allow } }
+
+    # --- VS Code Remote Tunnels (opt-in) ---------------------------------------
+    # Uncomment to allow `sbx.sh code`. This opens a remote-control channel into the
+    # sandbox; log in with `code tunnel user login --provider microsoft`.
+    # - { name: vscode-tunnels-api, match: { host: "*.tunnels.api.visualstudio.com" }, action: { type: Allow } }
+    # - { name: vscode-devtunnels, match: { host: "*.devtunnels.ms" }, action: { type: Allow } }
+    # - { name: vscode-update, match: { host: "update.code.visualstudio.com" }, action: { type: Allow } }
+    # - { name: vscode-download, match: { host: "vscode.download.prss.microsoft.com" }, action: { type: Allow } }
+    # - { name: vscode-cdn, match: { host: "*.vscode-cdn.net" }, action: { type: Allow } }
+    # - { name: vscode-marketplace, match: { host: "marketplace.visualstudio.com" }, action: { type: Allow } }
+    # - { name: vscode-gallery, match: { host: "*.gallerycdn.vsassets.io" }, action: { type: Allow } }
+    # - { name: ms-login, match: { host: "login.microsoftonline.com" }, action: { type: Allow } }
+    # - { name: ms-login-live, match: { host: "login.live.com" }, action: { type: Allow } }

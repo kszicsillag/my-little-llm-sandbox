@@ -4,9 +4,10 @@ These templates apply the devcontainer approach to Azure Container Apps Sandboxe
 
 | Devcontainer | Here |
 |---|---|
-| `Dockerfile` + features | [`image/Dockerfile`](image/Dockerfile) → disk image `agent-base-v2` (built remotely; base pinned by digest) |
+| `Dockerfile` + features | [`image/Dockerfile`](image/Dockerfile) → disk image `agent-base-v3` (built remotely; base image, Claude Code and VS Code CLI pinned) |
 | `devcontainer.json` | [`standard.yaml`](standard.yaml) / [`hardened.yaml`](hardened.yaml) (sandbox manifests) |
-| `postCreateCommand` | [`image/bootstrap.sh`](image/bootstrap.sh) (`sandbox-bootstrap` in the image) |
+| `postCreateCommand` | [`image/bootstrap.sh`](image/bootstrap.sh) (`sandbox-bootstrap` in the image), then the **project's own** `<repo>/.sandbox/setup.sh` |
+| VS Code "Reopen in Container" | `sbx.sh code <name>` → VS Code Remote Tunnel; ports such as 8000 forward to your `localhost` |
 | Named volumes + workspace bind mount | One `DataDisk` volume per repo (`persist-<name>`) at `/persist`. It holds `$HOME` state and the cloned repo |
 | "Reopen in container" / rebuild | `sbx.sh up` / `sbx.sh down` + `up` |
 | OneCLI gateway (hardened) | Egress proxy: default Deny, allowlist, credentials injected from sandbox-group secrets |
@@ -30,18 +31,123 @@ These templates apply the devcontainer approach to Azure Container Apps Sandboxe
 
 **Standard** profile: run `gh auth login` and `claude` once inside the sandbox. The logins are stored on the volume and survive rebuilds.
 
-**Hardened** profile:
+### Project dependencies
+
+These go on the volume, not in a per-project image. Bootstrap runs on every `up`, after the clone:
+
+1. **Project hook (preferred).** If `<repo>/.sandbox/setup.sh` exists, it runs from the repo root with `SANDBOX_STATE_DIR=/persist/projects/<name>`. A venv at `$SANDBOX_STATE_DIR/venv` is activated in new shells automatically. The hook must be idempotent. See skalazhato's `.sandbox/setup.sh` for an example.
+2. **Auto-detect (fallback):**
+   - `requirements.txt` → venv + `pip install -r`
+   - `package-lock.json` → `npm ci` (or `package.json` → `npm install`)
+   - `*.sln`/`*.csproj` → `dotnet restore` (needs a .NET stack image)
+
+Bake dependencies into an image only when there's a reason to:
+
+- the hardened profile shouldn't reach package registries;
+- several sandboxes of the same project run in parallel (a DataDisk volume mounts to one sandbox);
+- setup is slow or needs OS packages.
+
+`aca sandbox commit` after bootstrap gives a disposable warm image for those cases.
+
+### VS Code (Remote Tunnels)
 
 ```sh
-.sandbox/sbx.sh secrets          # GitHub fine-grained PAT + Anthropic key → sandbox-group secrets
+.sandbox/sbx.sh shell repo     # once: code tunnel user login --provider microsoft
+.sandbox/sbx.sh code repo      # starts the tunnel "sbx-repo"
+```
+
+Connect from VS Code: install the *Remote - Tunnels* extension, then go to Remote Explorer → Tunnels → `sbx-repo`, or open `https://vscode.dev/tunnel/sbx-repo`. Ports forward to your `localhost`, so the MkDocs preview is at `http://localhost:8000/...`.
+
+- Use the **Microsoft** login provider. GitHub login conflicts with the hardened profile's `github.com` header injection.
+- `sbx.sh code` sets idle auto-suspend to 1 h, because tunnel traffic doesn't count as activity. Disk-mode suspend stops the tunnel.
+- **Standard** keeps the tunnel login on the volume. **Hardened** doesn't, so you log in again after each rebuild. Hardened also needs the tunnel hosts allowed: uncomment the VS Code block in `hardened*.yaml`.
+
+**Hardened** profiles. There are two, and they differ only in how Claude is billed:
+
+| Profile | Claude auth | Billing |
+|---|---|---|
+| `hardened` | OAuth token from `claude setup-token`, injected as `Authorization: Bearer` | Your Claude Pro/Max subscription |
+| `hardened-apikey` | Console API key, injected as `x-api-key` | Pay-as-you-go API credits, separate from the subscription |
+
+```sh
+claude setup-token               # on your PC, logged in with your subscription (for `hardened`)
+.sandbox/sbx.sh secrets          # GitHub fine-grained PAT + Claude token and/or API key → sandbox-group secrets
 .sandbox/sbx.sh up hardened https://github.com/me/repo
 ```
 
-The sandbox never sees a token. `GH_TOKEN` and `ANTHROPIC_API_KEY` are placeholders. The proxy injects the real values:
+The sandbox never sees a token. `GH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) are placeholders. The proxy injects the real values:
 
 - `Authorization: Bearer` for `api.github.com`
 - `Authorization: Basic` for git over HTTPS to `github.com`
-- `x-api-key` for `api.anthropic.com`
+- `api.anthropic.com`: `Authorization: Bearer` (`hardened`) or `x-api-key` (`hardened-apikey`)
+
+Don't set `ANTHROPIC_API_KEY` in the `hardened` profile. Claude Code would use API-key mode and bill per token.
+
+### Secrets for the hardened profiles
+
+Secrets are stored at **sandbox-group** level. The egress proxy injects them into requests from **every** sandbox in the group, and the sandboxes never see the values. Keep one sandbox group per person or trust boundary, and don't share a group whose secrets are your personal tokens.
+
+| Secret (bundle / key) | Used by | Needed for |
+|---|---|---|
+| `github` / `token`, `basic` | `api.github.com` (`Bearer`), git over HTTPS to `github.com` (`Basic`) | Both hardened profiles (clone, fetch, push, `gh`) |
+| `anthropic` / `oauth` | `api.anthropic.com` (`Authorization: Bearer`) | `hardened`: Claude via your subscription |
+| `anthropic` / `key` | `api.anthropic.com` (`x-api-key`) | `hardened-apikey`: Claude via pay-as-you-go API |
+
+#### 1. GitHub fine-grained personal access token
+
+1. GitHub → **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**.
+2. **Resource owner:** the user or organization that owns the repo. If the organization requires approval for fine-grained tokens, an org owner approves it under the org's **Settings → Personal access tokens → Pending requests**.
+3. **Repository access:** *Only select repositories*. Pick only the repos the sandbox should work on.
+4. **Permissions** (repository):
+   - **Contents: Read and write**: clone, fetch, push.
+   - **Pull requests: Read and write**: `gh pr create`. Leave it out if the agent shouldn't open PRs.
+   - **Metadata: Read** is added automatically.
+5. **Expiration:** as short as practical (for example 7–30 days). It has to start with `github_pat_`; classic `ghp_` tokens are broader, so don't use them.
+
+#### 2. Claude subscription token (for `hardened`)
+
+On your own machine, with Claude Code logged in to your Pro/Max account:
+
+```sh
+claude setup-token
+```
+
+It prints a long-lived OAuth token. Copy it right away. Usage counts against your subscription limits, the same as interactive Claude Code. It's personal: don't put it in a shared sandbox group.
+
+#### 3. Anthropic API key (for `hardened-apikey`, optional)
+
+**Anthropic Console** (console.anthropic.com) → **API Keys** → **Create Key**. Billing is per token from your API credits, separate from any Claude subscription. Set a spend limit for the workspace in the Console.
+
+#### Store, check, rotate, remove
+
+```sh
+.sandbox/sbx.sh secrets                        # prompts (hidden input) for all three; Enter skips one
+aca sandboxgroup secret list                   # bundles in the group
+aca sandboxgroup secret show --name github     # metadata and key names
+```
+
+- **Rotate:** run `sbx.sh secrets` again with the new value. `secret set` merges keys, so the other keys in the bundle stay as they are. Whether already-running sandboxes pick up the new value right away isn't verified, so recreate them (`sbx.sh down` + `up`) to be sure.
+- **Remove:** `aca sandboxgroup secret delete --name github --yes` (or `--name anthropic`). If a token may have leaked, also revoke it at the source: GitHub's fine-grained token page or the Console's API Keys page. For a `claude setup-token` token, see the Claude Code docs on revoking it.
+- `sbx.sh secrets` reads values from hidden prompts and pipes them to `aca … --from-stdin`. They don't end up in shell history, files or process arguments.
+
+**Azure portal alternative:** Container Apps Sandbox groups → *your group* → **Security → Secrets → Create**. Enter the **Secret ID** (`github` or `anthropic`) and add the key-value pairs from the table above. The same page lists, updates and deletes secrets.
+
+- The `github` / `basic` value is `base64("x-access-token:<PAT>")`. `sbx.sh secrets` computes it for you; in the portal you paste it yourself. In PowerShell, without the token landing in history:
+
+  ```powershell
+  $t = Read-Host -AsSecureString "PAT"; $p = [Net.NetworkCredential]::new('', $t).Password
+  [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$p")) | Set-Clipboard; $p = $null
+  ```
+
+- The Value field is plain text, so the token is visible on screen while you paste it.
+- `aca sandboxgroup browse` opens this portal view for the configured group.
+
+Check the injection without exposing anything (in a hardened sandbox):
+
+```sh
+.sandbox/sbx.sh exec repo 'echo $GH_TOKEN; curl -s https://api.github.com/user | head -3'
+# prints the placeholder "injected-by-egress-proxy", then your GitHub user (not "Bad credentials")
+```
 
 To change what's allowed, edit the `egressPolicy.rules` in `hardened.yaml`. The first matching rule wins, so put Deny and Transform rules before Allow rules.
 
