@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # sbx.sh: devcontainer-style workflow for ACA Sandboxes.
 #
-#   sbx.sh image                         build the base disk image from .sandbox/image
+#   sbx.sh image [stack]                 build the base disk image, or base + image/stacks/<stack>.Dockerfile
 #   sbx.sh up <standard|hardened|hardened-apikey> <repo-url> [name]
 #                                        create volume (once) + sandbox, run bootstrap
 #   sbx.sh shell <name>                  interactive shell
@@ -46,8 +46,20 @@ sandbox_id() {  # <name>
 
 require_sandbox() { local id; id="$(sandbox_id "$1")"; [ -n "$id" ] || die "no sandbox named '$1'"; echo "$id"; }
 
-cmd_image() {
-  "$ACA" sandboxgroup disk create --source "$HERE/image" --name "$SBX_IMAGE"
+cmd_image() {  # [stack]: no stack = base image; a stack appends image/stacks/<stack>.Dockerfile
+  local stack="${1:-}" ctx
+  if [ -z "$stack" ]; then
+    "$ACA" sandboxgroup disk create --source "$HERE/image" --name "$SBX_IMAGE"
+    return
+  fi
+  [ -f "$HERE/image/stacks/$stack.Dockerfile" ] || die "unknown stack '$stack' (see image/stacks/)"
+  ctx="$(mktemp -d)"
+  cp "$HERE/image/Dockerfile" "$HERE/image/bootstrap.sh" "$ctx/"
+  printf '\n' >>"$ctx/Dockerfile"
+  cat "$HERE/image/stacks/$stack.Dockerfile" >>"$ctx/Dockerfile"
+  echo "building $SBX_IMAGE = base + stack '$stack'"
+  "$ACA" sandboxgroup disk create --source "$ctx" --name "$SBX_IMAGE"
+  rm -rf "$ctx"
 }
 
 cmd_up() {
@@ -72,6 +84,24 @@ cmd_up() {
   if [ "${SBX_VSCODE:-0}" = 1 ]; then
     sed -i -E 's/^(\s*)# (- \{ name: (vscode-|ms-login))/\1\2/' "$manifest"
     echo "SBX_VSCODE=1: VS Code tunnel hosts allowed"
+  fi
+  # SBX_ALLOW="host1,*.host2,host3/path/*": extra Allow rules for this sandbox (hardened profiles),
+  # appended after the profile's own rules (first match wins, so injection/deny rules apply first).
+  # A "/path" part restricts the rule to that path and to GET/HEAD: use it for shared hosts such
+  # as storage.googleapis.com, where a host-wide allow would open every bucket for upload.
+  if [ -n "${SBX_ALLOW:-}" ]; then
+    grep -q '^  rules:' "$manifest" || die "SBX_ALLOW needs a profile with egress rules (hardened*)"
+    local h i=0
+    for h in ${SBX_ALLOW//,/ }; do
+      i=$((i+1))
+      if [[ "$h" == */* ]]; then
+        printf '    - { name: extra-%d, match: { host: "%s", path: "/%s", methods: [GET, HEAD] }, action: { type: Allow } }\n' \
+          "$i" "${h%%/*}" "${h#*/}" >>"$manifest"
+      else
+        printf '    - { name: extra-%d, match: { host: "%s" }, action: { type: Allow } }\n' "$i" "$h" >>"$manifest"
+      fi
+    done
+    echo "SBX_ALLOW: $i extra rule(s) allowed"
   fi
   "$ACA" sandbox apply --file "$manifest"
   rm -f "$manifest"
@@ -146,7 +176,7 @@ cmd_secrets() {
 }
 
 case "${1:-}" in
-  image)   cmd_image ;;
+  image)   shift; cmd_image "$@" ;;
   up)      shift; cmd_up "$@" ;;
   shell)   "$ACA" sandbox shell --id "$(require_sandbox "${2:?name}")" ;;
   code)    cmd_code "${2:-}" ;;

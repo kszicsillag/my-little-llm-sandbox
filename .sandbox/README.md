@@ -49,6 +49,31 @@ Bake dependencies into an image only when there's a reason to:
 
 `aca sandbox commit` after bootstrap gives a disposable warm image for those cases.
 
+### Stack images and per-sandbox allowlists
+
+Some repos need OS-level tooling the base image doesn't have. `sbx.sh image <stack>` builds the base image plus `image/stacks/<stack>.Dockerfile`. Give it its own name:
+
+```sh
+SBX_IMAGE=agent-dotnet-v2 .sandbox/sbx.sh image dotnet   # base + .NET 10 SDK, Node 24, emf2svg, poppler, Playwright libs, csharp-ls
+```
+
+For hardened sandboxes, `SBX_ALLOW` adds Allow rules for that one sandbox:
+
+- A plain host allows the whole host.
+- `host/path/*` allows only that path, and only for GET/HEAD. Use it for shared hosts such as `storage.googleapis.com`: allowing the whole host would open every bucket for uploads.
+
+**Example: `bmeviaumb11/skalazhato-ea` (C# + Slidev), verified 2026-11-13.** Its `converter` and `slides` CI suites pass:
+
+```sh
+export SBX_IMAGE=agent-dotnet-v2 SBX_CPU=2000m SBX_MEMORY=4096Mi SBX_ROOT_DISK=8Gi SBX_VOLUME_SIZE=12Gi
+export SBX_ALLOW="api.nuget.org,globalcdn.nuget.org,cdn.playwright.dev,playwright.download.prss.microsoft.com,storage.googleapis.com/chrome-for-testing-public/*"
+.sandbox/sbx.sh up hardened https://github.com/bmeviaumb11/skalazhato-ea.git skalazhato-ea
+```
+
+- **Size L (2 vCPU / 4 GiB).** At 2 GiB, headless Chrome gets OOM-killed during `Page.printToPDF` when building the decks. Check with `sudo dmesg | grep -i oom`. L uses 2 cores of the regional quota.
+- **Long commands:** `aca sandbox exec` times out on long runs, such as the full CI. Start them with `nohup … &` and poll a log file.
+- **Not included:** the converter's Azure OpenAI calls (`AZURE_OPENAI_ENDPOINT`). They'd need the endpoint host allowed, plus a key or a managed-identity token injected by the egress proxy.
+
 ### VS Code (Remote Tunnels)
 
 ```sh
