@@ -93,5 +93,6 @@ egressPolicy:
     # - { name: vscode-cdn, match: { host: "*.vscode-cdn.net" }, action: { type: Allow } }
     # - { name: vscode-marketplace, match: { host: "marketplace.visualstudio.com" }, action: { type: Allow } }
     # - { name: vscode-gallery, match: { host: "*.gallerycdn.vsassets.io" }, action: { type: Allow } }
+    # - { name: vscode-gallery-vsix, match: { host: "*.gallery.vsassets.io" }, action: { type: Allow } }
     # - { name: ms-login, match: { host: "login.microsoftonline.com" }, action: { type: Allow } }
     # - { name: ms-login-live, match: { host: "login.live.com" }, action: { type: Allow } }

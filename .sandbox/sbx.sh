@@ -7,6 +7,7 @@
 #   sbx.sh shell <name>                  interactive shell
 #   sbx.sh exec <name> <command...>      run a command
 #   sbx.sh code <name>                   start a VS Code Remote Tunnel (connect from desktop VS Code)
+#   sbx.sh allow-vscode <name>           add the VS Code tunnel hosts to a running hardened sandbox (no rebuild)
 #   sbx.sh preview <name> [port] [email] expose a port via sandbox ingress, Entra auth (default 8000, az login email)
 #   sbx.sh ls                            list sandboxes created by sbx.sh
 #   sbx.sh down <name>                   delete the sandbox, KEEP the volume ("rebuild")
@@ -113,7 +114,7 @@ cmd_up() {
 }
 
 cmd_code() {  # <name>
-  local name="${1:?name}" id tunnel
+  local name="${1:?name}" id tunnel ws
   id="$(require_sandbox "$name")"
   tunnel="$(printf 'sbx-%s' "$name" | tr 'A-Z_.' 'a-z--' | cut -c1-20)"   # tunnel names: <=20 chars
   # Tunnel traffic does not count as sandbox activity; give idle suspend more room while coding.
@@ -126,7 +127,40 @@ cmd_code() {  # <name>
   fi
   # PID file, not pgrep -f: the exec'd shell's own command line would match the pattern.
   "$ACA" sandbox exec --id "$id" -c "if [ -f /tmp/code-tunnel.pid ] && kill -0 \$(cat /tmp/code-tunnel.pid) 2>/dev/null; then echo 'tunnel already running'; else nohup code tunnel --accept-server-license-terms --name $tunnel >/tmp/code-tunnel.log 2>&1 & echo \$! >/tmp/code-tunnel.pid; sleep 8; fi; tail -4 /tmp/code-tunnel.log"
-  echo "connect: VS Code > Remote Explorer > Tunnels > $tunnel   (or https://vscode.dev/tunnel/$tunnel)"
+  # Open the real path, not the ~/workspace symlink: Workspace Trust is per opened path (stored in
+  # your desktop VS Code), so trusting /persist/workspace once covers every repo and every rebuild.
+  ws="$("$ACA" sandbox exec --id "$id" -c 'readlink -f ~/workspace 2>/dev/null' | tr -d '\r' | tail -1)"
+  echo "connect: VS Code > Remote Explorer > Tunnels > $tunnel"
+  if [ -n "$ws" ]; then
+    echo "  or:    code --folder-uri vscode-remote://tunnel+$tunnel$ws"
+    echo "  or:    https://vscode.dev/tunnel/$tunnel$ws"
+    echo "trust:   on the first prompt choose 'Trust the authors of all files in the parent folder' ($(dirname "$ws"))"
+  else
+    echo "  or:    https://vscode.dev/tunnel/$tunnel"
+  fi
+}
+
+cmd_allow_vscode() {  # <name>: same rules as SBX_VSCODE=1, patched into the live egress policy
+  local name="${1:?name}" id policy rules
+  id="$(require_sandbox "$name")"
+  policy="$(mktemp --suffix=.yaml)"
+  "$ACA" sandbox egress export --id "$id" >"$policy"
+  grep -q '^rules:' "$policy" || { rm -f "$policy"; die "'$name' has no egress rules (standard profile allows all egress already)"; }
+  # The commented-out block in hardened.yaml is the single source of the host list.
+  # Add only the rules the live policy lacks, so re-running picks up hosts added later.
+  local r n; rules=""
+  while IFS= read -r r; do
+    n="$(sed -E 's/^- \{ name: ([^,]+),.*/\1/' <<<"$r")"
+    grep -q "name: $n\$" "$policy" || rules+="${rules:+$'\n'}$r"
+  done < <(sed -n -E 's/^\s*# (- \{ name: (vscode-|ms-login).*)$/\1/p' "$HERE/hardened.yaml")
+  [ -n "$rules" ] || { rm -f "$policy"; echo "VS Code tunnel hosts already allowed"; return; }
+  echo "adding: $(sed -E 's/^- \{ name: ([^,]+),.*/\1/' <<<"$rules" | tr '\n' ' ')"
+  # Append to the top-level rules list, i.e. before the next top-level key (trafficInspection).
+  awk -v add="$rules" 'inrules && !done && /^[A-Za-z]/ {print add; done=1} /^rules:/ {inrules=1} {print} END {if (!done) print add}' \
+    "$policy" >"$policy.new"
+  "$ACA" sandbox egress apply --id "$id" --file "$policy.new" >/dev/null
+  rm -f "$policy" "$policy.new"
+  echo "VS Code tunnel hosts allowed for '$name'; next: sbx.sh shell $name -> code tunnel user login --provider microsoft"
 }
 
 cmd_preview() {  # <name> [port] [email]
@@ -178,8 +212,12 @@ cmd_secrets() {
 case "${1:-}" in
   image)   shift; cmd_image "$@" ;;
   up)      shift; cmd_up "$@" ;;
-  shell)   "$ACA" sandbox shell --id "$(require_sandbox "${2:?name}")" ;;
+  # `aca sandbox shell` opens as root while `exec` runs as the image USER (dev): switch to dev so
+  # logins (code tunnel, gh, ...) land in /home/dev. -E keeps the manifest env, PATH dodges secure_path.
+  shell)   "$ACA" sandbox shell --id "$(require_sandbox "${2:?name}")" \
+             -c 'sudo -E -u dev env HOME=/home/dev PATH="$PATH" bash -l' ;;
   code)    cmd_code "${2:-}" ;;
+  allow-vscode) cmd_allow_vscode "${2:-}" ;;
   preview) shift; cmd_preview "$@" ;;
   exec)    n="${2:?name}"; shift 2; "$ACA" sandbox exec --id "$(require_sandbox "$n")" -c "$*" ;;
   ls)      "$ACA" sandbox list ;;
@@ -188,5 +226,5 @@ case "${1:-}" in
            [ -z "$id" ] || "$ACA" sandbox delete --id "$id" --yes
            "$ACA" sandboxgroup volume delete --name "persist-$n" ;;
   secrets) cmd_secrets ;;
-  *)       sed -n '2,16p' "$0"; exit 2 ;;
+  *)       sed -n '2,17p' "$0"; exit 2 ;;
 esac

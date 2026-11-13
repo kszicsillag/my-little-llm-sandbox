@@ -84,10 +84,12 @@ SBX_VSCODE=1 .sandbox/sbx.sh up hardened <repo-url> repo   # hardened only: allo
 
 Connect from desktop VS Code: install the *Remote - Tunnels* extension, then go to Remote Explorer → Tunnels → `sbx-repo`. Or open `https://vscode.dev/tunnel/sbx-repo`.
 
+- **Workspace Trust** is stored in your desktop VS Code, per remote path, so the sandbox can't pre-trust anything. Open the real path that `sbx.sh code` prints (`/persist/workspace/<repo>`, not the `~/workspace` symlink). On the first prompt, trust the parent folder `/persist/workspace`. That covers every repo and every rebuild, as long as the tunnel name stays the same.
 - Use the **Microsoft** login provider. GitHub login conflicts with the hardened profile's `github.com` header injection.
 - `sbx.sh code` sets idle auto-suspend to 1 h, because tunnel traffic doesn't count as activity. Disk-mode suspend stops the tunnel.
 - **Standard** keeps the tunnel login on the volume. **Hardened** doesn't, so you log in again after each rebuild.
 - `SBX_VSCODE=1` enables the commented-out VS Code block in `hardened*.yaml`, for that sandbox only. Without it the hardened profiles block the tunnel.
+- Already created a hardened sandbox without it? Run `sbx.sh allow-vscode <name>`. It adds the same rules to the live egress policy without a rebuild. A later `down` + `up` drops them again unless you pass `SBX_VSCODE=1`.
 - **Forwarded ports go through dev tunnels, even in desktop VS Code.** The Ports tab shows `https://<id>-<port>.<region>.devtunnels.ms`, not `localhost`. That works, but the first load is slow. Use `sbx.sh preview` (below) for a fast preview.
 - **Extensions get the injected GitHub token.** Injection is per host, so any extension that calls `api.github.com` (GitHub, Pull Requests) is authenticated as you, within the PAT's scope. Be selective about extensions in hardened sandboxes.
 - **Copilot doesn't work in hardened** (`*.githubcopilot.com` is blocked), and neither does Microsoft/Copilot telemetry. Allow `api.githubcopilot.com`, `api.individual.githubcopilot.com` and `exp.individual.githubcopilot.com` if you want it.
