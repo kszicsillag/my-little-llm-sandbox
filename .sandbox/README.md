@@ -153,6 +153,8 @@ Secrets are stored at **sandbox-group** level. The egress proxy injects them int
    - **Contents: Read and write**: clone, fetch, push.
    - **Pull requests: Read and write**: `gh pr create`. Leave it out if the agent shouldn't open PRs.
    - **Issues: Read and write**: `gh issue view/create/comment/edit`, so the agent can read the issue it works on and report back. Leave it out if the agent shouldn't touch issues.
+   - **Actions: Read-only**: `gh run list/view/watch` and `gh run view --log-failed`, so the agent can see why a workflow failed.
+   - **Commit statuses: Read-only**: commit status results, so the agent can check CI that reports statuses.
    - **Metadata: Read** is added automatically.
 5. **Expiration:** as short as practical (for example 7–30 days). It has to start with `github_pat_`; classic `ghp_` tokens are broader, so don't use them.
 
@@ -179,6 +181,7 @@ aca sandboxgroup secret show --name github     # metadata and key names
 ```
 
 - **Rotate:** run `sbx.sh secrets` again with the new value. `secret set` merges keys, so the other keys in the bundle stay as they are. Whether already-running sandboxes pick up the new value right away isn't verified, so recreate them (`sbx.sh down` + `up`) to be sure.
+- **Change PAT permissions:** edit the token on GitHub's fine-grained token page. The token value stays the same, so the secret doesn't need updating. Only a new or regenerated PAT needs `sbx.sh secrets` again.
 - **Remove:** `aca sandboxgroup secret delete --name github --yes` (or `--name anthropic`). If a token may have leaked, also revoke it at the source: GitHub's fine-grained token page or the Console's API Keys page. For a `claude setup-token` token, see the Claude Code docs on revoking it.
 - `sbx.sh secrets` reads values from hidden prompts and pipes them to `aca … --from-stdin`. They don't end up in shell history, files or process arguments.
 
