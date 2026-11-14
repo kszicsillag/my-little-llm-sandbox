@@ -8,11 +8,16 @@
 #   sbx.sh exec <name> <command...>      run a command
 #   sbx.sh code <name>                   start a VS Code Remote Tunnel (connect from desktop VS Code)
 #   sbx.sh allow-vscode <name>           add the VS Code tunnel hosts to a running hardened sandbox (no rebuild)
-#   sbx.sh preview <name> [port] [email] expose a port via sandbox ingress, Entra auth (default 8000, az login email)
+#   sbx.sh allow-all <name> [ttl]        hardened: switch egress default to Allow (rules still apply first); ttl e.g. 30m, 2h
+#   sbx.sh lockdown <name>               switch egress default back to Deny
+#   sbx.sh learned <name>                hosts reached only via the default Allow (candidates for SBX_ALLOW)
+#   sbx.sh preview <name> [port|from-to] [email]
+#                                        expose port(s) via sandbox ingress, Entra auth (default 8000, az login email)
 #   sbx.sh ls                            list sandboxes created by sbx.sh
 #   sbx.sh down <name>                   delete the sandbox, KEEP the volume ("rebuild")
 #   sbx.sh purge <name>                  delete the sandbox AND its volume
 #   sbx.sh secrets                       set github / anthropic secrets for the hardened profile
+#   (shell, code, allow-*, lockdown, learned, preview: <name> may be omitted if exactly one sbx sandbox is running)
 #
 # Requires: aca CLI (configured: `aca config sandbox set --group <group>`), python, envsubst.
 set -euo pipefail
@@ -140,6 +145,108 @@ cmd_code() {  # <name>
   fi
 }
 
+# --- live egress policy edits (export -> edit YAML -> apply; no rebuild) ---------------------
+add_rules() {  # <rule lines>; stdin: exported policy. Appends to the top-level rules list,
+               # i.e. before the next top-level key (trafficInspection), so profile rules match first.
+  awk -v add="$1" 'inrules && !done && /^[A-Za-z]/ {print add; done=1} /^rules:/ {inrules=1} {print} END {if (!done) print add}'
+}
+
+drop_allow_all_marker() {  # stdin: exported policy (block-style YAML); removes allow-all-* marker rules
+  awk '/^- .*name: allow-all-/ {skip=1; next} skip && /^(- |[A-Za-z])/ {skip=0} !skip'
+}
+
+to_seconds() {  # 90 | 90s | 30m | 2h
+  case "$1" in
+    *h) echo $(( ${1%h} * 3600 )) ;; *m) echo $(( ${1%m} * 60 )) ;; *s) echo "${1%s}" ;;
+    *[!0-9]*|'') die "bad duration '$1' (use e.g. 30m, 2h)" ;; *) echo "$1" ;;
+  esac
+}
+
+timer_pidfile() { echo "${TMPDIR:-/tmp}/sbx-allow-all-$1.pid"; }
+
+cancel_timer() {  # <name>: stop a pending auto-lockdown from an earlier allow-all
+  local f; f="$(timer_pidfile "$1")"
+  [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null || true
+  rm -f "$f"
+}
+
+egress_default() {  # <id> -> Allow | Deny
+  "$ACA" sandbox get --id "$1" -o json | json_pick "(d.get('egressPolicy') or {}).get('defaultAction')"
+}
+
+cmd_allow_all() {  # <name> [ttl]
+  local name="${1:?name}" ttl="${2:-}" id policy secs=0 now deadline=0
+  id="$(require_sandbox "$name")"
+  [ -z "$ttl" ] || secs="$(to_seconds "$ttl")"
+  now="$(date +%s)"; [ "$secs" -eq 0 ] || deadline=$((now + secs))
+  policy="$(mktemp --suffix=.yaml)"
+  "$ACA" sandbox egress export --id "$id" >"$policy"
+  grep -q '^rules:' "$policy" || { rm -f "$policy"; die "'$name' has no egress rules (standard profile allows all egress already)"; }
+  # Marker rule on a reserved .invalid host (never resolves): records when it opened and until
+  # when, inside the policy itself. It matches no real traffic.
+  sed 's/^defaultAction: Deny/defaultAction: Allow/' "$policy" | drop_allow_all_marker \
+    | add_rules "- { name: allow-all-$now-$deadline, match: { host: \"allow-all.marker.invalid\" }, action: { type: Allow } }" \
+    >"$policy.new"
+  "$ACA" sandbox egress apply --id "$id" --file "$policy.new" >/dev/null
+  rm -f "$policy" "$policy.new"
+
+  cancel_timer "$name"
+  if [ "$secs" -gt 0 ]; then
+    # Local timer: runs while this PC is on. If it dies (reboot, logoff), the sandbox stays open
+    # until you run `sbx.sh lockdown`; `sbx.sh shell` warns about it.
+    nohup bash -c "sleep $secs; exec '$HERE/sbx.sh' lockdown '$name'" >/dev/null 2>&1 &
+    echo $! >"$(timer_pidfile "$name")"
+    echo "egress OPEN for '$name' until $(date -d "@$deadline" '+%H:%M') (auto-lockdown by a local timer)"
+  else
+    echo "egress OPEN for '$name' until: sbx.sh lockdown $name"
+  fi
+  echo "still enforced: token injection (github/anthropic), block-repo-delete. NOT enforced: data exfiltration, untrusted downloads."
+  echo "afterwards: sbx.sh learned $name"
+}
+
+cmd_lockdown() {  # <name>
+  local name="${1:?name}" id policy
+  id="$(require_sandbox "$name")"
+  cancel_timer "$name"
+  policy="$(mktemp --suffix=.yaml)"
+  "$ACA" sandbox egress export --id "$id" >"$policy"
+  if ! grep -q '^defaultAction: Allow' "$policy" && ! grep -q 'name: allow-all-' "$policy"; then
+    rm -f "$policy"; echo "'$name' is already locked down"; return
+  fi
+  grep -q '^rules:' "$policy" || { rm -f "$policy"; die "'$name' has no egress rules (standard profile): not touching it"; }
+  sed 's/^defaultAction: Allow/defaultAction: Deny/' "$policy" | drop_allow_all_marker >"$policy.new"
+  "$ACA" sandbox egress apply --id "$id" --file "$policy.new" >/dev/null
+  rm -f "$policy" "$policy.new"
+  [ "$(egress_default "$id")" = Deny ] || die "lockdown did not take effect, check: aca sandbox egress show --id $id"
+  echo "egress locked down for '$name' (default Deny)"
+}
+
+cmd_learned() {  # <name>: allowed requests that no named rule matched, i.e. let through by default Allow
+  local name="${1:?name}" id names
+  id="$(require_sandbox "$name")"
+  names="$("$ACA" sandbox get --id "$id" -o json \
+    | json_pick "','.join(r['name'] for r in (d.get('egressPolicy') or {}).get('rules', []) if not r['name'].startswith('allow-all-'))")"
+  "$ACA" sandbox egress decisions --id "$id" -o json | "$PY" -c '
+import json, sys
+names = set(sys.argv[1].split(","))
+d = json.load(sys.stdin).get("networkEgress", {})
+hosts = {}
+for x in d.get("allowed", []):
+    if x.get("matchedRule") in names:
+        continue  # covered by a profile / SBX_ALLOW rule already
+    h = hosts.setdefault(x["host"], {"n": 0, "methods": set(), "paths": set(), "last": ""})
+    h["n"] += 1; h["methods"].add(x.get("method", "?")); h["paths"].add(x.get("path", "")[:60])
+    h["last"] = max(h["last"], x.get("timestamp", ""))
+if not hosts:
+    print("no requests outside the named rules in the decisions log"); sys.exit(0)
+row = "%-45s %5s  %-12s %-9s  %s"
+print(row % ("host", "hits", "methods", "last seen", "sample path"))
+for host, h in sorted(hosts.items(), key=lambda kv: -kv[1]["n"]):
+    print(row % (host, h["n"], ",".join(sorted(h["methods"])), h["last"][11:19], sorted(h["paths"])[0]))
+print("\nkeep what you need: SBX_ALLOW=host1,host2/path/* on the next `up` (path = GET/HEAD only)")
+' "$names"
+}
+
 cmd_allow_vscode() {  # <name>: same rules as SBX_VSCODE=1, patched into the live egress policy
   local name="${1:?name}" id policy rules
   id="$(require_sandbox "$name")"
@@ -155,16 +262,21 @@ cmd_allow_vscode() {  # <name>: same rules as SBX_VSCODE=1, patched into the liv
   done < <(sed -n -E 's/^\s*# (- \{ name: (vscode-|ms-login).*)$/\1/p' "$HERE/hardened.yaml")
   [ -n "$rules" ] || { rm -f "$policy"; echo "VS Code tunnel hosts already allowed"; return; }
   echo "adding: $(sed -E 's/^- \{ name: ([^,]+),.*/\1/' <<<"$rules" | tr '\n' ' ')"
-  # Append to the top-level rules list, i.e. before the next top-level key (trafficInspection).
-  awk -v add="$rules" 'inrules && !done && /^[A-Za-z]/ {print add; done=1} /^rules:/ {inrules=1} {print} END {if (!done) print add}' \
-    "$policy" >"$policy.new"
+  add_rules "$rules" <"$policy" >"$policy.new"
   "$ACA" sandbox egress apply --id "$id" --file "$policy.new" >/dev/null
   rm -f "$policy" "$policy.new"
   echo "VS Code tunnel hosts allowed for '$name'; next: sbx.sh shell $name -> code tunnel user login --provider microsoft"
 }
 
-cmd_preview() {  # <name> [port] [email]
+cmd_preview() {  # <name> [port|from-to] [email]
   local name="${1:?name}" port="${2:-8000}" email="${3:-}" id
+  if [[ "$port" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+    local p from="${BASH_REMATCH[1]}" to="${BASH_REMATCH[2]}"
+    [ "$from" -le "$to" ] && [ $((to - from)) -lt 20 ] || die "bad port range '$port' (from<=to, at most 20 ports)"
+    for ((p = from; p <= to; p++)); do cmd_preview "$name" "$p" "$email" || return; done
+    return
+  fi
+  [[ "$port" =~ ^[0-9]+$ ]] || die "bad port '$port'"
   id="$(require_sandbox "$name")"
   # Default: the signed-in Azure CLI user (the Entra identity that manages this sandbox group).
   [ -n "$email" ] || email="$(az account show --query user.name -o tsv 2>/dev/null)"
@@ -209,15 +321,47 @@ cmd_secrets() {
   fi
 }
 
+# Missing arguments: print that command's line from the header instead of bash's terse "1: name".
+usage() { grep -E "^#   sbx.sh $1( |$)" "$0" | sed 's/^#   /usage: /' >&2; exit 2; }
+running_sbx() {  # names of running sandboxes created by sbx.sh, one per line
+  "$ACA" sandbox list -o json | "$PY" -c '
+import json, sys
+d = json.load(sys.stdin); d = d if isinstance(d, list) else d.get("value", [])
+for x in d:
+    n = (x.get("labels") or {}).get("sbx"); s = x.get("state") or (x.get("status") or {}).get("state")
+    if n and s == "Running": print(n)'
+}
+
+case "${1:-}" in
+  up|exec) [ $# -ge 3 ] || usage "$1" ;;
+  down|purge) [ -n "${2:-}" ] || usage "$1" ;;   # destructive: never guess the target
+  # Name optional when exactly one sbx sandbox is running. A ttl/port in its place (allow-all 30m,
+  # preview 8000) also means "no name given".
+  shell|code|allow-vscode|allow-all|lockdown|learned|preview)
+    if [ -z "${2:-}" ] || [[ "$2" =~ ^[0-9]+([smh]|-[0-9]+)?$ ]]; then
+      mapfile -t run < <(running_sbx | tr -d '\r')
+      if [ "${#run[@]}" -ne 1 ]; then
+        echo "name required: ${#run[@]} sbx sandboxes running${run[*]:+ (${run[*]})}" >&2; usage "$1"
+      fi
+      echo "(using the only running sandbox: ${run[0]})" >&2
+      set -- "$1" "${run[0]}" "${@:2}"
+    fi ;;
+esac
+
 case "${1:-}" in
   image)   shift; cmd_image "$@" ;;
   up)      shift; cmd_up "$@" ;;
   # `aca sandbox shell` opens as root while `exec` runs as the image USER (dev): switch to dev so
   # logins (code tunnel, gh, ...) land in /home/dev. -E keeps the manifest env, PATH dodges secure_path.
-  shell)   "$ACA" sandbox shell --id "$(require_sandbox "${2:?name}")" \
+  shell)   id="$(require_sandbox "${2:?name}")"
+           [ "$(egress_default "$id")" != Allow ] || echo "WARNING: egress is OPEN (allow-all) for '$2'; close with: sbx.sh lockdown $2" >&2
+           "$ACA" sandbox shell --id "$id" \
              -c 'sudo -E -u dev env HOME=/home/dev PATH="$PATH" bash -l' ;;
   code)    cmd_code "${2:-}" ;;
   allow-vscode) cmd_allow_vscode "${2:-}" ;;
+  allow-all) shift; cmd_allow_all "$@" ;;
+  lockdown)  cmd_lockdown "${2:-}" ;;
+  learned)   cmd_learned "${2:-}" ;;
   preview) shift; cmd_preview "$@" ;;
   exec)    n="${2:?name}"; shift 2; "$ACA" sandbox exec --id "$(require_sandbox "$n")" -c "$*" ;;
   ls)      "$ACA" sandbox list ;;
@@ -226,5 +370,5 @@ case "${1:-}" in
            [ -z "$id" ] || "$ACA" sandbox delete --id "$id" --yes
            "$ACA" sandboxgroup volume delete --name "persist-$n" ;;
   secrets) cmd_secrets ;;
-  *)       sed -n '2,17p' "$0"; exit 2 ;;
+  *)       sed -n '2,21p' "$0"; exit 2 ;;
 esac

@@ -29,6 +29,8 @@ These templates apply the devcontainer approach to Azure Container Apps Sandboxe
 .sandbox/sbx.sh purge repo                              # delete sandbox + volume
 ```
 
+If exactly one sbx sandbox is running, you can leave out `<name>` for `shell`, `code`, `allow-vscode`, `allow-all`, `lockdown`, `learned` and `preview`. For example, `sbx.sh allow-all 30m` or `sbx.sh preview 8000`. `up`, `exec`, `down` and `purge` always need a name.
+
 **Standard** profile: run `gh auth login` and `claude` once inside the sandbox. The logins are stored on the volume and survive rebuilds.
 
 ### Project dependencies
@@ -99,9 +101,13 @@ Connect from desktop VS Code: install the *Remote - Tunnels* extension, then go 
 ```sh
 .sandbox/sbx.sh preview repo [port] [email]   # default port 8000, email = your `az account show` user
 # → https://<sandbox-id>--<port>.<region>.adcproxy.io   (open in the browser, e.g. append /skalazhato/)
+.sandbox/sbx.sh preview repo 3030-3034        # a range: one URL per port (max 20)
 ```
 
 This exposes the port through the sandbox's own ingress, which doesn't go through dev tunnels or the egress proxy. It's restricted to one Entra identity in your tenant and is never anonymous.
+
+- **The server must listen on `0.0.0.0`.** If it listens on `127.0.0.1` only, the ingress returns `{"error":"Failed to forward request"}`. Vite-based servers (Vite, Slidev) also need `server.allowedHosts: ['.adcproxy.io']`.
+- **Inside the sandbox, `sbx-url <port> [path]` prints the same URL.** It's built from `ADC_SANDBOX_ID` and `ADC_PROXY_DNS_SUFFIX`. Bootstrap also writes a marked block into `~/.claude/CLAUDE.md`. It tells the agent to report `sbx-url` URLs instead of `localhost`, to bind to `0.0.0.0`, and that you have to open the port. The agent can't see which ports are open, because only the management API knows.
 
 - Verified with `mkdocs serve`: fast, browser sign-in works, and **live reload works**. MkDocs uses HTTP long-polling, not WebSockets.
 - `aca sandbox port add --email` doesn't work as of aca 1.0.0-preview.5: it omits the required `auth.entraId.tenantIds` and gets a `400`. `sbx.sh preview` calls the same data-plane endpoint with `az rest` and adds your tenant.
@@ -146,6 +152,7 @@ Secrets are stored at **sandbox-group** level. The egress proxy injects them int
 4. **Permissions** (repository):
    - **Contents: Read and write**: clone, fetch, push.
    - **Pull requests: Read and write**: `gh pr create`. Leave it out if the agent shouldn't open PRs.
+   - **Issues: Read and write**: `gh issue view/create/comment/edit`, so the agent can read the issue it works on and report back. Leave it out if the agent shouldn't touch issues.
    - **Metadata: Read** is added automatically.
 5. **Expiration:** as short as practical (for example 7–30 days). It has to start with `github_pat_`; classic `ghp_` tokens are broader, so don't use them.
 
@@ -196,6 +203,23 @@ Check the injection without exposing anything (in a hardened sandbox):
 
 To change what's allowed, edit the `egressPolicy.rules` in `hardened.yaml`. The first matching rule wins, so put Deny and Transform rules before Allow rules.
 
+### Temporarily open egress (discovery mode)
+
+When an agent or build keeps hitting denied hosts, open egress for a short window, then turn what it used into specific rules:
+
+```sh
+.sandbox/sbx.sh allow-all repo 30m   # default Allow for 30 min (no ttl = until lockdown)
+# ... run the failing build / agent task ...
+.sandbox/sbx.sh lockdown repo        # back to default Deny now (also cancels the timer)
+.sandbox/sbx.sh learned repo         # hosts reached only via the default Allow → add them to SBX_ALLOW
+```
+
+- Only the policy's `defaultAction` changes. The rules still match first, so **token injection and `block-repo-delete` stay in force**, and tokens still never enter the sandbox.
+- **Not protected while open:** the agent, or anything it runs, can upload repo contents anywhere, and fetch untrusted pages and binaries. That's the main prompt-injection route, so don't leave an open sandbox unattended.
+- The **ttl is a local timer** on your PC (`nohup sleep … && sbx.sh lockdown`). If the PC reboots or the timer process dies, egress stays open. `sbx.sh shell` warns when a sandbox is open. The policy also records the window in a marker rule, `allow-all-<opened>-<deadline>`, on the never-resolving host `allow-all.marker.invalid`.
+- `learned` reads `aca sandbox egress decisions`. It lists every allowed request whose `matchedRule` isn't one of the policy's named rules. Only `allow-all` lets such requests through, so they're the hosts you'd otherwise have to allow by hand.
+- Like `allow-vscode`, these commands edit the live policy. A `down` + `up` always starts from the clean profile.
+
 ## What persists
 
 | Location | Survives `down` + `up` |
@@ -212,7 +236,7 @@ To change what's allowed, edit the `egressPolicy.rules` in `hardened.yaml`. The 
 
 ## Verified behaviour (2026-11-12, aca 1.0.0-preview.5)
 
-- Commands run as `dev` (non-root), using the image's `USER`. PID 1 is the platform's `tini … adc-hold`, so the image `CMD` is ignored.
+- `aca sandbox exec` runs as `dev` (non-root), using the image's `USER`. `aca sandbox shell` opens as **root**, so `sbx.sh shell` switches to `dev`; otherwise logins land in `/root`. PID 1 is the platform's `tini … adc-hold`, so the image `CMD` is ignored.
 - Volume state survived deleting and recreating the sandbox. Files on the root disk didn't.
 - Hardened profile:
   - headers were injected for GitHub API, git HTTPS and Anthropic;

@@ -66,6 +66,44 @@ case "$PROFILE" in
   *) echo "unknown profile: $PROFILE" >&2; exit 2 ;;
 esac
 
+# Ingress URLs: the agent should report https://<id>--<port>.<region>.adcproxy.io, not localhost.
+# The sandbox knows its id and region (ADC_* env); which ports are open is only known outside
+# (`sbx.sh preview`), so the helper builds the URL but cannot check it.
+mkdir -p "$HOME/.local/bin"
+cat >"$HOME/.local/bin/sbx-url" <<'EOF'
+#!/usr/bin/env bash
+# sbx-url <port> [path]: this sandbox's ingress URL for <port> (open it from outside: sbx.sh preview <name> <port>)
+set -euo pipefail
+port="${1:?usage: sbx-url <port> [path]}"; path="${2:-}"
+: "${ADC_SANDBOX_ID:?not in an ACA sandbox (ADC_SANDBOX_ID unset)}"
+region="${ADC_PROXY_DNS_SUFFIX#proxy.}"; region="${region%%.*}"
+[ -n "$region" ] || { echo "cannot derive region from ADC_PROXY_DNS_SUFFIX" >&2; exit 1; }
+echo "https://${ADC_SANDBOX_ID}--${port}.${region}.adcproxy.io/${path#/}"
+EOF
+chmod 0755 "$HOME/.local/bin/sbx-url"
+add_rc sbx-public-url 'export SBX_PUBLIC_URL="$(sbx-url "{port}" 2>/dev/null)"'
+
+# User-level agent instructions, in a marked block (keeps anything else in ~/.claude/CLAUDE.md).
+mkdir -p "$HOME/.claude"
+md="$HOME/.claude/CLAUDE.md"; touch "$md"
+sed -i '/^<!-- sbx:begin -->$/,/^<!-- sbx:end -->$/d' "$md"
+cat >>"$md" <<'EOF'
+<!-- sbx:begin -->
+## Running inside an ACA sandbox (managed by sbx.sh; regenerated on every bootstrap)
+
+- The user cannot reach `localhost` here. Ports are reached via the sandbox ingress:
+  `sbx-url <port> [path]` prints `https://<sandbox-id>--<port>.<region>.adcproxy.io/...`.
+  When you start or mention a server, give that URL, never `http://localhost:<port>`.
+- Bind servers to `0.0.0.0`, not `127.0.0.1`/`localhost`, or the ingress fails with
+  `{"error":"Failed to forward request"}`. Examples: `vite --host 0.0.0.0`, `slidev --remote`,
+  `uvicorn --host 0.0.0.0`, `dotnet run --urls http://0.0.0.0:<port>`, `python -m http.server -b 0.0.0.0`.
+- Vite-based dev servers (Vite, Slidev, Astro, ...) reject unknown Host headers: set
+  `server: { allowedHosts: ['.adcproxy.io'] }` in the Vite config.
+- You cannot open ports or check which are open. The user must run, on their machine:
+  `sbx.sh preview <sandbox-name> <port>` (or a range, e.g. `3030-3034`). Say so when you hand out a URL.
+<!-- sbx:end -->
+EOF
+
 [ -n "$REPO_URL" ] || { echo "bootstrap ($PROFILE) done (no repo)"; exit 0; }
 
 # 3. Workspace (the bind-mount equivalent: lives on the volume).
