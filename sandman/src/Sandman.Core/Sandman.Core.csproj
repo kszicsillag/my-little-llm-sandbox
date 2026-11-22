@@ -2,5 +2,6 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Azure.ContainerApps.Sandbox" />
     <PackageReference Include="Azure.Identity" />
+    <PackageReference Include="YamlDotNet" />
   </ItemGroup>
 </Project>

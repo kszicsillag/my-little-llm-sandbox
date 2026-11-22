@@ -119,6 +119,33 @@ lockdown.SetAction(async (pr, ct) => await Run(async client =>
 }));
 root.Subcommands.Add(lockdown);
 
+// up <standard|hardened|hardened-apikey> <repo-url> [name]: same env knobs as sbx.sh
+// (SBX_IMAGE, SBX_CPU, SBX_MEMORY, SBX_ROOT_DISK, SBX_VOLUME_SIZE, SBX_VSCODE=1, SBX_ALLOW)
+var upProfile = new Argument<string>("profile") { Description = "standard | hardened | hardened-apikey (a .sandbox/<profile>.yaml)" };
+var upRepo = new Argument<string>("repo-url") { Description = "git repository to clone into the workspace" };
+var upName = new Argument<string?>("name") { Arity = ArgumentArity.ZeroOrOne, Description = "sandbox name (default: repo name)" };
+var up = new Command("up", "create volume (once) + sandbox from a profile, run bootstrap") { upProfile, upRepo, upName, dryRunOpt };
+up.SetAction(async (pr, ct) => await Run(async client =>
+{
+    Console.OutputEncoding = System.Text.Encoding.UTF8;
+    var o = SandmanClient.UpOptions.FromEnvironment(pr.GetValue(upProfile)!, pr.GetValue(upRepo)!, pr.GetValue(upName));
+    var plan = await client.PlanUpAsync(o, ct);
+    if (o.VsCode) Console.Error.WriteLine("SBX_VSCODE=1: VS Code tunnel hosts allowed");
+    if (o.Allow.Count > 0) Console.Error.WriteLine($"SBX_ALLOW: {o.Allow.Count} extra rule(s) allowed");
+
+    if (pr.GetValue(dryRunOpt))
+    {
+        Console.Error.WriteLine($"name {o.Name}, disk image {o.Image} ({plan.DiskId}), volume {plan.Volume} {(plan.VolumeExists ? "exists (reused)" : $"would be created ({o.VolumeSize})")}");
+        Console.WriteLine(plan.Request.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+        Console.Error.WriteLine("(dry run: nothing created)");
+        return;
+    }
+
+    var sb = await client.UpAsync(o, plan, Console.Error.WriteLine, Console.Out.Write, Console.Error.Write, ct);
+    Console.WriteLine($"ready: sbx.sh shell {sb.Name}");
+}));
+root.Subcommands.Add(up);
+
 // exec <name> <command...>: everything after the name is the remote command, verbatim (joined with
 // spaces and run by bash -c, like sbx.sh's "$*"). Dispatched before the parser so `-la` etc. aren't sbx options;
 // registered here only for --help.
@@ -152,7 +179,7 @@ down.SetAction(async (pr, ct) => await Run(async client =>
     var sb = await client.GetAsync(pr.GetValue(downName)!, ct);
     if (!pr.GetValue(yesOpt) && !Confirm($"delete sandbox '{sb.Name}' (volume {SandmanClient.VolumeName(sb.Name)} is kept)?")) return;
     await client.DeleteAsync(sb, ct);
-    Console.WriteLine($"deleted sandbox '{sb.Name}'; volume {SandmanClient.VolumeName(sb.Name)} kept (sbx.sh up ... {sb.Name} brings it back)");
+    Console.WriteLine($"deleted sandbox '{sb.Name}'; volume {SandmanClient.VolumeName(sb.Name)} kept (sbx up <profile> <repo-url> {sb.Name} brings it back)");
 }));
 root.Subcommands.Add(down);
 

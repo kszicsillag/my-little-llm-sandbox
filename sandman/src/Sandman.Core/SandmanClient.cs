@@ -1,3 +1,5 @@
+using System.ClientModel.Primitives;
+using System.Text.Json.Nodes;
 using System.Text;
 using System.Text.Json;
 using Azure.Core;
@@ -21,7 +23,7 @@ public sealed record SbxSandbox(string Name, string Id, string State, SandboxRes
 public sealed record SignedInUser(string? Email, string? TenantId);
 
 /// <summary>sbx.sh's operations over the ACA Sandboxes .NET SDK (no aca / az / bash processes).</summary>
-public sealed class SandmanClient
+public sealed partial class SandmanClient
 {
     public const string NameLabel = "sbx";
 
@@ -228,12 +230,12 @@ public sealed class SandmanClient
     /// <summary>Delete the volume persist-&lt;name&gt;. False = it didn't exist.</summary>
     public async Task<bool> DeleteVolumeAsync(string sandboxName, CancellationToken ct = default)
     {
-        try
-        {
-            await _group.GetVolumeResource(VolumeName(sandboxName)).DeleteVolumeAsync(ct);
-            return true;
-        }
+        // Delete is idempotent (no 404 for a missing volume), so check first to report "didn't exist".
+        var volume = _group.GetVolumeResource(VolumeName(sandboxName));
+        try { await volume.GetAsync(ct); }
         catch (Azure.RequestFailedException e) when (e.Status == 404) { return false; }
+        await volume.DeleteVolumeAsync(ct);
+        return true;
     }
 
     /// <summary>A host reached only via default Allow (no named rule matched): a candidate for SBX_ALLOW.</summary>
@@ -283,6 +285,90 @@ public sealed class SandmanClient
     /// <summary>Create or replace a sandbox-group secret (all keys at once). Values are never logged.</summary>
     public async Task SetSecretAsync(string name, IDictionary<string, string> values, CancellationToken ct = default) =>
         await _group.SetSecretAsync(name, new SetSecretContent(values), ct);
+
+    /// <summary>sbx.sh `up` settings: the same environment variables and defaults.</summary>
+    public sealed record UpOptions(
+        string Profile, string RepoUrl, string Name,
+        string Image, string Cpu, string Memory, string RootDisk, string VolumeSize,
+        bool VsCode, IReadOnlyList<string> Allow)
+    {
+        public static UpOptions FromEnvironment(string profile, string repoUrl, string? name)
+        {
+            static string Env(string n, string def) => Environment.GetEnvironmentVariable(n) is { Length: > 0 } v ? v : def;
+            name ??= Path.GetFileName(repoUrl.TrimEnd('/')) is var b && b.EndsWith(".git", StringComparison.Ordinal) ? b[..^4] : Path.GetFileName(repoUrl.TrimEnd('/'));
+            if (string.IsNullOrEmpty(name)) throw new SandmanException($"can't derive a name from '{repoUrl}'; pass one");
+            return new UpOptions(profile, repoUrl, name,
+                Env("SBX_IMAGE", "agent-base-v3"), Env("SBX_CPU", "500m"), Env("SBX_MEMORY", "1024Mi"),
+                Env("SBX_ROOT_DISK", "5Gi"), Env("SBX_VOLUME_SIZE", "5Gi"),
+                Env("SBX_VSCODE", "0") == "1",
+                Env("SBX_ALLOW", "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        }
+    }
+
+    public sealed record UpPlan(JsonObject Request, string DiskId, bool VolumeExists, string Volume);
+
+    /// <summary>Everything `up` checks and renders, without creating anything.</summary>
+    public async Task<UpPlan> PlanUpAsync(UpOptions o, CancellationToken ct = default)
+    {
+        var profilePath = SandboxDir.Profile(o.Profile);
+        if (!File.Exists(profilePath)) throw new SandmanException($"unknown profile '{o.Profile}' (no {profilePath})");
+        if (!NameRx().IsMatch(o.Name)) throw new SandmanException($"bad name '{o.Name}' (lowercase letters, digits, '-')");
+        if ((await ListAsync(ct)).Any(s => s.Name == o.Name))
+            throw new SandmanException($"sandbox '{o.Name}' already exists (DataDisk volumes mount to one sandbox at a time)");
+
+        string? diskId = null;
+        await foreach (var d in _group.GetDiskImagesAsync(null, ct))
+            if (d.Data?.Name == o.Image && d.Data.Status?.State.ToString() == "Ready") { diskId = d.Data.Id; break; }
+        if (diskId is null) throw new SandmanException($"disk image '{o.Image}' not found or not Ready; run: sbx.sh image");
+
+        var volume = VolumeName(o.Name);
+        bool volumeExists;
+        try { await _group.GetVolumeResource(volume).GetAsync(ct); volumeExists = true; }
+        catch (Azure.RequestFailedException e) when (e.Status == 404) { volumeExists = false; }
+
+        var mo = new ManifestOptions(o.Name, diskId, o.Cpu, o.Memory, o.RootDisk, volume, o.VsCode, o.Allow);
+        var request = Manifest.ToRequest(Manifest.Render(await File.ReadAllTextAsync(profilePath, ct), mo), mo);
+        // Fail on shape problems before creating the volume, not after.
+        _ = ModelReaderWriter.Read<CreateSandboxContent>(BinaryData.FromString(request.ToJsonString()))
+            ?? throw new SandmanException("rendered profile doesn't deserialize into a create-sandbox request");
+        return new UpPlan(request, diskId, volumeExists, volume);
+    }
+
+    /// <summary>sbx.sh `up`: volume (once) + sandbox from the profile, then sandbox-bootstrap. Returns the new sandbox.</summary>
+    public async Task<SbxSandbox> UpAsync(UpOptions o, UpPlan plan, Action<string> progress,
+        Action<string> stdout, Action<string> stderr, CancellationToken ct = default)
+    {
+        if (!plan.VolumeExists)
+        {
+            progress($"creating DataDisk volume {plan.Volume} ({o.VolumeSize})");
+            // The SDK model has no type/size properties yet; unknown JSON fields pass through to the service.
+            var vol = ModelReaderWriter.Read<SandboxGroupVolume>(BinaryData.FromString(
+                new JsonObject { ["volumeName"] = plan.Volume, ["type"] = "DataDisk", ["size"] = o.VolumeSize }.ToJsonString()))!;
+            await _group.CreateVolumeAsync(plan.Volume, vol, ct);
+        }
+
+        progress($"creating sandbox '{o.Name}' ({o.Profile}, {o.Image}, {o.Cpu}/{o.Memory})");
+        var content = ModelReaderWriter.Read<CreateSandboxContent>(BinaryData.FromString(plan.Request.ToJsonString()))!;
+        var created = (await _group.CreateSandboxAsync(content, ct)).Value;
+
+        SbxSandbox? sb = null;
+        for (var i = 0; i < 90 && sb is not { IsRunning: true }; i++)
+        {
+            if (i > 0) await Task.Delay(TimeSpan.FromSeconds(2), ct);
+            sb = (await ListAsync(ct)).FirstOrDefault(s => s.Id == created.Id);
+        }
+        if (sb is not { IsRunning: true })
+            throw new SandmanException($"sandbox '{o.Name}' was created but isn't Running after 3 minutes (state: {sb?.State ?? "not listed"})");
+
+        // hardened-* variants differ only in egress/auth; bootstrap is the same.
+        progress("bootstrapping");
+        var exit = await ExecAsync(sb, $"sandbox-bootstrap {o.Profile.Split('-')[0]} {Manifest.ShQuote(o.RepoUrl)}", stdout, stderr, ct);
+        if (exit != 0) throw new SandmanException($"sandbox-bootstrap exited with {exit}; sandbox '{o.Name}' is up, fix and re-run: sbx exec {o.Name} sandbox-bootstrap ...");
+        return sb;
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^[a-z0-9]([a-z0-9-]{0,50}[a-z0-9])?$")]
+    private static partial System.Text.RegularExpressions.Regex NameRx();
 
     /// <summary>Email + tenant of whoever the credential signs in as (replaces `az account show`).</summary>
     public async Task<SignedInUser> GetSignedInUserAsync(CancellationToken ct = default)

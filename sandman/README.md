@@ -36,7 +36,8 @@ dotnet run --project src/Sandman.Tray
 | `learned` | ✅ needs a running sandbox (the decisions log is read from it) |
 | `allow-vscode` | ✅ `--dry-run`. The host list is the commented-out block in `.sandbox/hardened.yaml` (found by searching upward from the current or executable directory, or from `SBX_HOME`) |
 | `secrets` | ✅ hidden input. Both Anthropic keys go into one `anthropic` secret in a single call (`sbx.sh` wrote them separately, so the second replaced the first) |
-| `up`, `shell`, `code` | still in `sbx.sh` |
+| `up` | ✅ `--dry-run` prints the request. Same profiles and settings as `sbx.sh` (`SBX_IMAGE`, `SBX_CPU`, `SBX_MEMORY`, `SBX_ROOT_DISK`, `SBX_VOLUME_SIZE`, `SBX_VSCODE=1`, `SBX_ALLOW`). The YAML is converted to the REST body as-is, except that `diskId` moves to `sourcesRef.diskImage.id` |
+| `shell`, `code` | still in `sbx.sh` |
 
 Under Git Bash on Windows, export `MSYS_NO_PATHCONV=1` before passing absolute sandbox paths to `sbx exec`. Otherwise
 Git Bash rewrites `/persist` to `C:/Program Files/Git/persist` before `sbx.exe` sees it. PowerShell doesn't do this.
