@@ -24,6 +24,8 @@ These templates apply the devcontainer approach to Azure Container Apps Sandboxe
 .sandbox/sbx.sh image                                   # once per Dockerfile change (~80 s)
 .sandbox/sbx.sh up standard https://github.com/me/repo  # ~10 s
 .sandbox/sbx.sh shell repo
+.sandbox/sbx.sh stop repo                               # stop now instead of waiting for idle auto-suspend
+.sandbox/sbx.sh resume repo                             # start it again
 .sandbox/sbx.sh down repo                               # "rebuild": volume is kept
 .sandbox/sbx.sh up standard https://github.com/me/repo  # state and workspace are back
 .sandbox/sbx.sh purge repo                              # delete sandbox + volume
@@ -79,10 +81,13 @@ export SBX_ALLOW="api.nuget.org,globalcdn.nuget.org,cdn.playwright.dev,playwrigh
 ### VS Code (Remote Tunnels)
 
 ```sh
-SBX_VSCODE=1 .sandbox/sbx.sh up hardened <repo-url> repo   # hardened only: allow the tunnel hosts for this sandbox
-.sandbox/sbx.sh shell repo     # once per volume (standard) or per rebuild (hardened): code tunnel user login --provider microsoft
-.sandbox/sbx.sh code repo      # starts the tunnel "sbx-repo"
+.sandbox/sbx.sh code repo      # logs in if needed (device code, Microsoft), then starts the tunnel "sbx-repo"
+
+# hardened, from scratch:
+SBX_VSCODE=1 .sandbox/sbx.sh up hardened <repo-url> repo && .sandbox/sbx.sh code repo
 ```
+
+If the tunnel isn't logged in yet, `sbx.sh code` runs `code tunnel user login --provider microsoft` in an interactive shell as `dev`. Open the device code URL it prints, sign in, and the tunnel starts right after.
 
 Connect from desktop VS Code: install the *Remote - Tunnels* extension, then go to Remote Explorer → Tunnels → `sbx-repo`. Or open `https://vscode.dev/tunnel/sbx-repo`.
 

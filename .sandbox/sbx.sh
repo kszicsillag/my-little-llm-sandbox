@@ -14,10 +14,12 @@
 #   sbx.sh preview <name> [port|from-to] [email]
 #                                        expose port(s) via sandbox ingress, Entra auth (default 8000, az login email)
 #   sbx.sh ls                            list sandboxes created by sbx.sh
+#   sbx.sh stop <name>                   stop the sandbox now (instead of waiting for idle auto-suspend)
+#   sbx.sh resume <name>                 start a stopped sandbox again
 #   sbx.sh down <name>                   delete the sandbox, KEEP the volume ("rebuild")
 #   sbx.sh purge <name>                  delete the sandbox AND its volume
 #   sbx.sh secrets                       set github / anthropic secrets for the hardened profile
-#   (shell, code, allow-*, lockdown, learned, preview: <name> may be omitted if exactly one sbx sandbox is running)
+#   (shell, code, allow-*, lockdown, learned, preview, stop: <name> may be omitted if exactly one sbx sandbox is running)
 #
 # Requires: aca CLI (configured: `aca config sandbox set --group <group>`), python, envsubst.
 set -euo pipefail
@@ -25,6 +27,13 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACA="${ACA:-aca}"
 command -v "$ACA" >/dev/null 2>&1 || ACA="$HOME/.aca/bin/aca"
+if ! command -v "$ACA" >/dev/null 2>&1; then
+  # From PowerShell, plain `bash` is usually WSL (System32\bash.exe), which doesn't see the Windows aca.exe.
+  grep -qi microsoft /proc/version 2>/dev/null \
+    && echo "sbx: running under WSL; use Git Bash instead: & \"C:\\Program Files\\Git\\bin\\bash.exe\" $0 ${*:-}" >&2
+  echo "sbx: aca CLI not found (tried 'aca' and $HOME/.aca/bin/aca); set ACA=/path/to/aca" >&2
+  exit 1
+fi
 PY="$(command -v python3 || command -v python)"
 
 # Sizing. Tier disk budget = root disk + volumes (S: 0.5 vCPU / 1 GiB / 10 GiB total).
@@ -125,10 +134,13 @@ cmd_code() {  # <name>
   # Tunnel traffic does not count as sandbox activity; give idle suspend more room while coding.
   "$ACA" sandbox lifecycle set --id "$id" --auto-suspend enable --idle-timeout-seconds 3600 --mode Disk >/dev/null
   if ! "$ACA" sandbox exec --id "$id" -c 'code tunnel user show >/dev/null 2>&1'; then
-    echo "VS Code tunnel is not logged in yet. Run once (device code login, Microsoft account):"
-    echo "  sbx.sh shell $name   then:   code tunnel user login --provider microsoft"
-    echo "(use the Microsoft provider: GitHub login conflicts with the hardened profile's github.com header injection)"
-    exit 1
+    # Device code login needs a TTY (exec has none): run it through `sandbox shell` as dev.
+    # Microsoft provider: GitHub login conflicts with the hardened profile's github.com header injection.
+    echo "VS Code tunnel is not logged in yet: starting device code login (Microsoft account)..."
+    "$ACA" sandbox shell --id "$id" \
+      -c 'sudo -E -u dev env HOME=/home/dev PATH="$PATH" code tunnel user login --provider microsoft'
+    "$ACA" sandbox exec --id "$id" -c 'code tunnel user show >/dev/null 2>&1' || {
+      echo "login failed or was cancelled; retry: sbx.sh code $name" >&2; exit 1; }
   fi
   # PID file, not pgrep -f: the exec'd shell's own command line would match the pattern.
   "$ACA" sandbox exec --id "$id" -c "if [ -f /tmp/code-tunnel.pid ] && kill -0 \$(cat /tmp/code-tunnel.pid) 2>/dev/null; then echo 'tunnel already running'; else nohup code tunnel --accept-server-license-terms --name $tunnel >/tmp/code-tunnel.log 2>&1 & echo \$! >/tmp/code-tunnel.pid; sleep 8; fi; tail -4 /tmp/code-tunnel.log"
@@ -265,7 +277,7 @@ cmd_allow_vscode() {  # <name>: same rules as SBX_VSCODE=1, patched into the liv
   add_rules "$rules" <"$policy" >"$policy.new"
   "$ACA" sandbox egress apply --id "$id" --file "$policy.new" >/dev/null
   rm -f "$policy" "$policy.new"
-  echo "VS Code tunnel hosts allowed for '$name'; next: sbx.sh shell $name -> code tunnel user login --provider microsoft"
+  echo "VS Code tunnel hosts allowed for '$name'; next: sbx.sh code $name"
 }
 
 cmd_preview() {  # <name> [port|from-to] [email]
@@ -335,9 +347,10 @@ for x in d:
 case "${1:-}" in
   up|exec) [ $# -ge 3 ] || usage "$1" ;;
   down|purge) [ -n "${2:-}" ] || usage "$1" ;;   # destructive: never guess the target
+  resume) [ -n "${2:-}" ] || usage "$1" ;;       # the "only running sandbox" shortcut can't apply to a stopped one
   # Name optional when exactly one sbx sandbox is running. A ttl/port in its place (allow-all 30m,
   # preview 8000) also means "no name given".
-  shell|code|allow-vscode|allow-all|lockdown|learned|preview)
+  shell|code|allow-vscode|allow-all|lockdown|learned|preview|stop)
     if [ -z "${2:-}" ] || [[ "$2" =~ ^[0-9]+([smh]|-[0-9]+)?$ ]]; then
       mapfile -t run < <(running_sbx | tr -d '\r')
       if [ "${#run[@]}" -ne 1 ]; then
@@ -365,10 +378,12 @@ case "${1:-}" in
   preview) shift; cmd_preview "$@" ;;
   exec)    n="${2:?name}"; shift 2; "$ACA" sandbox exec --id "$(require_sandbox "$n")" -c "$*" ;;
   ls)      "$ACA" sandbox list ;;
+  stop)    "$ACA" sandbox stop --id "$(require_sandbox "${2:?name}")" ;;
+  resume)  "$ACA" sandbox resume --id "$(require_sandbox "${2:?name}")" ;;
   down)    "$ACA" sandbox delete --id "$(require_sandbox "${2:?name}")" --yes ;;
   purge)   n="${2:?name}"; id="$(sandbox_id "$n")"
            [ -z "$id" ] || "$ACA" sandbox delete --id "$id" --yes
            "$ACA" sandboxgroup volume delete --name "persist-$n" ;;
   secrets) cmd_secrets ;;
-  *)       sed -n '2,21p' "$0"; exit 2 ;;
+  *)       sed -n '2,23p' "$0"; exit 2 ;;
 esac
