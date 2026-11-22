@@ -79,6 +79,45 @@ public static partial class Egress
 
     internal static JsonObject WithLockdown(JsonObject policy) => Edit(policy, "Deny", DropMarkers);
 
+    /// <summary>Append simple host Allow rules (keeps the default action).</summary>
+    internal static JsonObject WithHostRules(JsonObject policy, IEnumerable<(string Name, string Host)> rules)
+    {
+        var list = rules.ToList();
+        return Edit(policy, null, r =>
+        {
+            foreach (var (name, host) in list)
+                r.Add(new JsonObject
+                {
+                    ["name"] = name,
+                    ["match"] = new JsonObject { ["host"] = host },
+                    ["action"] = new JsonObject { ["type"] = "Allow" },
+                });
+        });
+    }
+
+    /// <summary>Names of the policy's rules, excluding allow-all markers.</summary>
+    internal static HashSet<string> RuleNames(JsonObject policy)
+    {
+        var (_, rules) = Section(policy);
+        return (rules ?? []).Select(r => r?["name"]?.GetValue<string>())
+            .Where(n => n is not null && !n.StartsWith(MarkerPrefix, StringComparison.Ordinal))
+            .Select(n => n!).ToHashSet(StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// The VS Code tunnel rules: the commented-out `vscode-*` / `ms-login*` block in hardened.yaml is the
+    /// single source (SBX_VSCODE=1 uncomments it on `up`, allow-vscode patches it into a live policy).
+    /// </summary>
+    public static IReadOnlyList<(string Name, string Host)> VsCodeRules(string hardenedYamlPath) =>
+        File.ReadLines(hardenedYamlPath)
+            .Select(l => VsCodeRuleRx().Match(l))
+            .Where(m => m.Success)
+            .Select(m => (m.Groups[1].Value, m.Groups[2].Value))
+            .ToList();
+
+    [GeneratedRegex(@"^\s*#\s*- \{ name: ((?:vscode-|ms-login)[\w-]*), match: \{ host: ""([^""]+)"" \}, action: \{ type: Allow \} \}\s*$")]
+    private static partial Regex VsCodeRuleRx();
+
     internal static JsonObject ToJson(SandboxEgressPolicy policy) =>
         JsonNode.Parse(ModelReaderWriter.Write(policy).ToString())!.AsObject();
 
@@ -87,7 +126,7 @@ public static partial class Egress
 
     // The service returns the HTTP policy twice: top-level defaultAction/rules (the shape `aca sandbox egress
     // export` uses) and mirrored under "http". Edit both identically so they can never disagree.
-    private static JsonObject Edit(JsonObject policy, string defaultAction, Action<JsonArray> editRules)
+    private static JsonObject Edit(JsonObject policy, string? defaultAction, Action<JsonArray> editRules)
     {
         var copy = policy.DeepClone().AsObject();
         copy.Remove("validationWarnings");   // read-only, server generated
@@ -95,7 +134,7 @@ public static partial class Egress
         {
             if (section is null) continue;
             if (section["rules"] is not JsonArray rules) continue;
-            section["defaultAction"] = defaultAction;
+            if (defaultAction is not null) section["defaultAction"] = defaultAction;
             editRules(rules);
         }
         return copy;

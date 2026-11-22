@@ -31,7 +31,15 @@ dotnet run --project src/Sandman.Tray
 | `ls`, `stop`, `resume` | ✅ |
 | `preview` | ✅ via the SDK's `PortAuthConfigEntraId.TenantIds`, which replaces the `az rest` workaround |
 | `allow-all`, `lockdown` | ✅ with `--dry-run`. `ls` shows an EGRESS column |
-| everything else | still in `sbx.sh` |
+| `exec` | ✅ streaming exec session, runs as `dev` (`SBX_USER`), resumes a stopped sandbox first (aca's `auto_resume`, `ACA_AUTO_RESUME=0` to disable). Long commands don't time out |
+| `down`, `purge` | ✅ confirmation prompt (`--yes` to skip; refuses without it when stdin is piped) |
+| `learned` | ✅ needs a running sandbox (the decisions log is read from it) |
+| `allow-vscode` | ✅ `--dry-run`. The host list is the commented-out block in `.sandbox/hardened.yaml` (found by searching upward from the current or executable directory, or from `SBX_HOME`) |
+| `secrets` | ✅ hidden input. Both Anthropic keys go into one `anthropic` secret in a single call (`sbx.sh` wrote them separately, so the second replaced the first) |
+| `up`, `shell`, `code` | still in `sbx.sh` |
+
+Under Git Bash on Windows, export `MSYS_NO_PATHCONV=1` before passing absolute sandbox paths to `sbx exec`. Otherwise
+Git Bash rewrites `/persist` to `C:/Program Files/Git/persist` before `sbx.exe` sees it. PowerShell doesn't do this.
 
 ### Allow-all timer
 

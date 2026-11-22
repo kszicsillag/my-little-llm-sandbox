@@ -8,6 +8,9 @@ namespace Sandman.Core;
 /// </summary>
 public sealed record AcaConfig(string Subscription, string ResourceGroup, string Region, string Group)
 {
+    /// <summary>Resume a stopped sandbox before exec, like aca's `auto_resume` setting (default true).</summary>
+    public bool AutoResume { get; init; } = true;
+
     public static string DefaultPath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".aca", "config.json");
 
@@ -15,6 +18,7 @@ public sealed record AcaConfig(string Subscription, string ResourceGroup, string
     {
         path ??= DefaultPath;
         string? sub = null, rg = null, region = null, group = null;
+        bool? autoResume = null;
 
         if (File.Exists(path))
         {
@@ -25,6 +29,8 @@ public sealed record AcaConfig(string Subscription, string ResourceGroup, string
                 rg = Str(s, "resource_group");
                 region = Str(s, "region");
                 group = Str(s, "group");
+                if (s.TryGetProperty("auto_resume", out var ar) && ar.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                    autoResume = ar.GetBoolean();
             }
         }
 
@@ -40,7 +46,8 @@ public sealed record AcaConfig(string Subscription, string ResourceGroup, string
                 $"sandbox group config incomplete (missing: {string.Join(", ", missing)}). " +
                 $"Run `aca config sandbox set --group <group>` or set ACA_SUBSCRIPTION / ACA_RESOURCE_GROUP / ACA_REGION / ACA_SANDBOX_GROUP. Looked in {path}");
 
-        return new AcaConfig(sub!, rg!, region!, group!);
+        if (Env("ACA_AUTO_RESUME") is { } env) autoResume = env is not ("0" or "false" or "False");
+        return new AcaConfig(sub!, rg!, region!, group!) { AutoResume = autoResume ?? true };
     }
 
     private static string? Str(JsonElement e, string name) =>

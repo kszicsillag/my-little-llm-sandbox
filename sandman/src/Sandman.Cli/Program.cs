@@ -119,7 +119,137 @@ lockdown.SetAction(async (pr, ct) => await Run(async client =>
 }));
 root.Subcommands.Add(lockdown);
 
+// exec <name> <command...>: everything after the name is the remote command, verbatim (joined with
+// spaces and run by bash -c, like sbx.sh's "$*"). Dispatched before the parser so `-la` etc. aren't sbx options;
+// registered here only for --help.
+var execCmd = new Command("exec", "run a command (bash -c, as dev), streaming output; exit code is passed through")
+{
+    new Argument<string>("name") { Description = "sandbox name" },
+    new Argument<string[]>("command") { Arity = ArgumentArity.OneOrMore, Description = "command and arguments" },
+};
+root.Subcommands.Add(execCmd);
+if (args is ["exec", var execName, .. var execRest] && execRest.Length > 0 && execName is not ("-h" or "--help" or "-?"))
+{
+    Console.OutputEncoding = System.Text.Encoding.UTF8;
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+    var exit = 1;
+    var rc = await Run(async client =>
+    {
+        var sb = await client.GetAsync(execName, cts.Token);
+        await client.EnsureRunningAsync(sb, Console.Error.WriteLine, cts.Token);
+        exit = await SandmanClient.ExecAsync(sb, string.Join(' ', execRest), Console.Out.Write, Console.Error.Write, cts.Token);
+    });
+    return rc != 0 ? rc : exit;
+}
+
+// down <name> / purge <name>: destructive, so the name is always required and we confirm
+var yesOpt = new Option<bool>("--yes", "-y") { Description = "don't ask for confirmation" };
+var downName = new Argument<string>("name") { Description = "sandbox name" };
+var down = new Command("down", "delete the sandbox, KEEP the volume (\"rebuild\")") { downName, yesOpt };
+down.SetAction(async (pr, ct) => await Run(async client =>
+{
+    var sb = await client.GetAsync(pr.GetValue(downName)!, ct);
+    if (!pr.GetValue(yesOpt) && !Confirm($"delete sandbox '{sb.Name}' (volume {SandmanClient.VolumeName(sb.Name)} is kept)?")) return;
+    await client.DeleteAsync(sb, ct);
+    Console.WriteLine($"deleted sandbox '{sb.Name}'; volume {SandmanClient.VolumeName(sb.Name)} kept (sbx.sh up ... {sb.Name} brings it back)");
+}));
+root.Subcommands.Add(down);
+
+var purgeName = new Argument<string>("name") { Description = "sandbox name" };
+var purge = new Command("purge", "delete the sandbox AND its volume") { purgeName, yesOpt };
+purge.SetAction(async (pr, ct) => await Run(async client =>
+{
+    var name = pr.GetValue(purgeName)!;
+    var sb = (await client.ListAsync(ct)).FirstOrDefault(s => s.Name == name);
+    var vol = SandmanClient.VolumeName(name);
+    if (!pr.GetValue(yesOpt) && !Confirm($"PERMANENTLY delete {(sb is null ? "" : $"sandbox '{name}' and ")}volume {vol} (workspace, logins, state)?")) return;
+    if (sb is not null) { await client.DeleteAsync(sb, ct); Console.WriteLine($"deleted sandbox '{name}'"); }
+    Console.WriteLine(await client.DeleteVolumeAsync(name, ct) ? $"deleted volume {vol}" : $"no volume {vol}");
+}));
+root.Subcommands.Add(purge);
+
+// learned [name]
+var learnedName = new Argument<string?>("name") { Arity = ArgumentArity.ZeroOrOne, Description = "sandbox name (default: the only running one)" };
+var learned = new Command("learned", "hosts reached only via the default Allow (candidates for SBX_ALLOW)") { learnedName };
+learned.SetAction(async (pr, ct) => await Run(async client =>
+{
+    var sb = await Resolve(client, pr.GetValue(learnedName), ct);
+    var hosts = await SandmanClient.LearnedAsync(sb, ct);
+    if (hosts.Count == 0) { Console.WriteLine("no requests outside the named rules in the decisions log"); return; }
+    Console.WriteLine($"{"host",-45} {"hits",5}  {"methods",-12} {"last seen",-9}  sample path");
+    foreach (var h in hosts)
+        Console.WriteLine($"{h.Host,-45} {h.Hits,5}  {string.Join(",", h.Methods),-12} {h.LastSeen.ToLocalTime():HH:mm:ss}  {h.SamplePath}");
+    Console.WriteLine("\nkeep what you need: SBX_ALLOW=host1,host2/path/* on the next `up` (path = GET/HEAD only)");
+}));
+root.Subcommands.Add(learned);
+
+// allow-vscode [name]
+var vsName = new Argument<string?>("name") { Arity = ArgumentArity.ZeroOrOne, Description = "sandbox name (default: the only running one)" };
+var allowVsCode = new Command("allow-vscode", "add the VS Code tunnel hosts to a running hardened sandbox (no rebuild)") { vsName, dryRunOpt };
+allowVsCode.SetAction(async (pr, ct) => await Run(async client =>
+{
+    var sb = await Resolve(client, pr.GetValue(vsName), ct);
+    var dry = pr.GetValue(dryRunOpt);
+    var added = await SandmanClient.AllowVsCodeAsync(sb, SandboxDir.Profile("hardened"), dry ? PrintDiff : null, ct);
+    if (added.Count == 0) { Console.WriteLine("VS Code tunnel hosts already allowed"); return; }
+    if (dry) return;
+    Console.WriteLine($"added: {string.Join(" ", added)}");
+    Console.WriteLine($"VS Code tunnel hosts allowed for '{sb.Name}'; next: sbx.sh code {sb.Name}");
+}));
+root.Subcommands.Add(allowVsCode);
+
+// secrets: github / anthropic sandbox-group secrets for the hardened profiles (egress token injection)
+var secrets = new Command("secrets", "set github / anthropic secrets for the hardened profiles");
+secrets.SetAction(async (_, ct) => await Run(async client =>
+{
+    var tok = ReadSecret("GitHub fine-grained token (empty = skip): ");
+    if (tok.Length > 0)
+    {
+        var basic = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes($"x-access-token:{tok}"));
+        await client.SetSecretAsync("github", new Dictionary<string, string> { ["token"] = tok, ["basic"] = basic }, ct);
+        Console.WriteLine("set secret github (token, basic)");
+    }
+    // hardened: `claude setup-token` (subscription); hardened-apikey: Console API key (pay-as-you-go).
+    // Both live in the secret "anthropic"; setting it replaces all its keys, so send what was entered together.
+    var oauth = ReadSecret("Claude subscription token from 'claude setup-token' (empty = skip): ");
+    var key = ReadSecret("Anthropic API key, pay-as-you-go (empty = skip): ");
+    var anthropic = new Dictionary<string, string>();
+    if (oauth.Length > 0) anthropic["oauth"] = oauth;
+    if (key.Length > 0) anthropic["key"] = key;
+    if (anthropic.Count > 0)
+    {
+        await client.SetSecretAsync("anthropic", anthropic, ct);
+        Console.WriteLine($"set secret anthropic ({string.Join(", ", anthropic.Keys)}; any other key in it was replaced)");
+    }
+}));
+root.Subcommands.Add(secrets);
+
 return await root.Parse(args).InvokeAsync();
+
+static bool Confirm(string question)
+{
+    if (Console.IsInputRedirected) throw new SandmanException("refusing to delete without confirmation: pass --yes");
+    Console.Write($"{question} [y/N] ");
+    return Console.ReadLine()?.Trim().ToLowerInvariant() is "y" or "yes";
+}
+
+// No echo. Piped stdin (scripts) reads a line instead.
+static string ReadSecret(string prompt)
+{
+    Console.Error.Write(prompt);
+    if (Console.IsInputRedirected) { var line = Console.ReadLine() ?? ""; Console.Error.WriteLine(); return line.Trim(); }
+    var sb = new System.Text.StringBuilder();
+    while (true)
+    {
+        var k = Console.ReadKey(intercept: true);
+        if (k.Key == ConsoleKey.Enter) break;
+        if (k.Key == ConsoleKey.Backspace) { if (sb.Length > 0) sb.Length--; continue; }
+        if (!char.IsControl(k.KeyChar)) sb.Append(k.KeyChar);
+    }
+    Console.Error.WriteLine();
+    return sb.ToString().Trim();
+}
 
 static string Describe(EgressState e) =>
     !e.HasRules ? "open (no rules)"
@@ -177,6 +307,11 @@ static async Task<int> Run(Func<SandmanClient, Task> body)
     catch (Azure.RequestFailedException e)
     {
         Console.Error.WriteLine($"sbx: {e.Status} {e.ErrorCode}: {e.Message.Split('\n')[0]}");
+        return 1;
+    }
+    catch (System.Net.WebSockets.WebSocketException e)
+    {
+        Console.Error.WriteLine($"sbx: exec session failed: {e.Message}");
         return 1;
     }
     catch (OperationCanceledException) { return 130; }
