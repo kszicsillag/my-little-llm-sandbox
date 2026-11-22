@@ -146,6 +146,24 @@ up.SetAction(async (pr, ct) => await Run(async client =>
 }));
 root.Subcommands.Add(up);
 
+// shell [name]: interactive login shell as dev (PTY). Name optional when exactly one sbx sandbox is running.
+var shellName = new Argument<string?>("name") { Arity = ArgumentArity.ZeroOrOne, Description = "sandbox name (default: the only running one)" };
+var shell = new Command("shell", "interactive shell as dev (resumes a stopped sandbox)") { shellName };
+shell.SetAction(async (pr, ct) => await Run(async client =>
+{
+    var name = pr.GetValue(shellName);
+    var sb = await Resolve(client, name, ct);
+    if (sb.Egress.IsOpen)
+        Console.Error.WriteLine($"WARNING: egress is OPEN (allow-all) for '{sb.Name}'; close with: sbx lockdown {sb.Name}");
+    await client.EnsureRunningAsync(sb, Console.Error.WriteLine, ct);
+
+    int exit;
+    using (Sandman.Cli.RawTerminal.Enter())
+        exit = await Shell.RunAsync(sb, Shell.LoginShell, Console.OpenStandardInput(), Console.OpenStandardOutput(), Sandman.Cli.RawTerminal.Size, ct);
+    if (exit != 0) Console.Error.WriteLine($"(shell exited with {exit})");
+}));
+root.Subcommands.Add(shell);
+
 // exec <name> <command...>: everything after the name is the remote command, verbatim (joined with
 // spaces and run by bash -c, like sbx.sh's "$*"). Dispatched before the parser so `-la` etc. aren't sbx options;
 // registered here only for --help.
