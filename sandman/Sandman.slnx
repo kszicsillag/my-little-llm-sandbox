@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Sandman.Cli/Sandman.Cli.csproj" />
+    <Project Path="src/Sandman.Core/Sandman.Core.csproj" />
+    <Project Path="src/Sandman.Tray/Sandman.Tray.csproj" />
+  </Folder>
+</Solution>
