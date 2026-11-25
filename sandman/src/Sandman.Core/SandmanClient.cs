@@ -14,6 +14,8 @@ public sealed record SbxSandbox(string Name, string Id, string State, SandboxRes
 {
     public bool IsRunning => State == "Running";
     public bool IsStopped => State == "Stopped";
+    /// <summary>States ResumeAsync accepts (Idle = auto-suspended).</summary>
+    public bool IsResumable => State is "Stopped" or "Idle";
 
     /// <summary>Egress state from the list snapshot (may lag a just-applied change; use GetEgressStateAsync for a fresh read).</summary>
     public EgressState Egress => Core.Egress.ReadState(Resource.Data?.EgressPolicy);

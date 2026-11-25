@@ -30,12 +30,14 @@ stop.SetAction(async (pr, ct) => await Run(async client =>
 }));
 root.Subcommands.Add(stop);
 
-// resume <name>: required, the "only running sandbox" shortcut can't apply to a stopped one
-var resumeName = new Argument<string>("name") { Description = "sandbox name" };
+// resume [name]: without a name, pick one of the stopped sandboxes by number
+var resumeName = new Argument<string?>("name") { Arity = ArgumentArity.ZeroOrOne, Description = "sandbox name (default: choose from the stopped ones)" };
 var resume = new Command("resume", "start a stopped sandbox again") { resumeName };
 resume.SetAction(async (pr, ct) => await Run(async client =>
 {
-    var sb = await client.GetAsync(pr.GetValue(resumeName)!, ct);
+    var name = pr.GetValue(resumeName);
+    var sb = string.IsNullOrEmpty(name) ? await PickResumable(client, ct) : await client.GetAsync(name, ct);
+    if (sb is null) return;
     await client.ResumeAsync(sb, ct);
     Console.WriteLine($"resumed '{sb.Name}'");
 }));
@@ -146,13 +148,13 @@ up.SetAction(async (pr, ct) => await Run(async client =>
 }));
 root.Subcommands.Add(up);
 
-// shell [name]: interactive login shell as dev (PTY). Name optional when exactly one sbx sandbox is running.
-var shellName = new Argument<string?>("name") { Arity = ArgumentArity.ZeroOrOne, Description = "sandbox name (default: the only running one)" };
+// shell [name]: interactive login shell as dev (PTY). No name: the only running sandbox, else choose one.
+var shellName = new Argument<string?>("name") { Arity = ArgumentArity.ZeroOrOne, Description = "sandbox name (default: the only running one, else choose from a list)" };
 var shell = new Command("shell", "interactive shell as dev (resumes a stopped sandbox)") { shellName };
 shell.SetAction(async (pr, ct) => await Run(async client =>
 {
     var name = pr.GetValue(shellName);
-    var sb = await Resolve(client, name, ct);
+    if (await ResolveOrPick(client, name, "shell into", ct) is not { } sb) return;
     if (sb.Egress.IsOpen)
         Console.Error.WriteLine($"WARNING: egress is OPEN (allow-all) for '{sb.Name}'; close with: sbx lockdown {sb.Name}");
     await client.EnsureRunningAsync(sb, Console.Error.WriteLine, ct);
@@ -164,12 +166,12 @@ shell.SetAction(async (pr, ct) => await Run(async client =>
 }));
 root.Subcommands.Add(shell);
 
-// code [name]: VS Code Remote Tunnel (logs in first if needed, via an interactive device-code session)
-var codeName = new Argument<string?>("name") { Arity = ArgumentArity.ZeroOrOne, Description = "sandbox name (default: the only running one)" };
-var code = new Command("code", "start a VS Code Remote Tunnel (connect from desktop VS Code)") { codeName };
+// code [name]: VS Code Remote Tunnel (resumes a stopped sandbox; logs in first if needed, via an interactive device-code session)
+var codeName = new Argument<string?>("name") { Arity = ArgumentArity.ZeroOrOne, Description = "sandbox name (default: the only running one, else choose from a list)" };
+var code = new Command("code", "start a VS Code Remote Tunnel (resumes a stopped sandbox; connect from desktop VS Code)") { codeName };
 code.SetAction(async (pr, ct) => await Run(async client =>
 {
-    var sb = await Resolve(client, pr.GetValue(codeName), ct);
+    if (await ResolveOrPick(client, pr.GetValue(codeName), "code", ct) is not { } sb) return;
     await client.EnsureRunningAsync(sb, Console.Error.WriteLine, ct);
     var tunnel = VsCode.TunnelName(sb.Name);
     await VsCode.SetIdleTimeoutAsync(sb, 3600, ct);
@@ -357,6 +359,59 @@ static async Task<SbxSandbox> Resolve(SandmanClient client, string? name, Cancel
     var sb = await client.ResolveAsync(name, ct);
     if (string.IsNullOrEmpty(name)) Console.Error.WriteLine($"(using the only running sandbox: {sb.Name})");
     return sb;
+}
+
+// Numbered list of the stopped / idle sbx sandboxes; null = nothing to resume or the user cancelled.
+static async Task<SbxSandbox?> PickResumable(SandmanClient client, CancellationToken ct)
+{
+    var all = await client.ListAsync(ct);
+    var stopped = all.Where(s => s.IsResumable).OrderBy(s => s.Name, StringComparer.Ordinal).ToList();
+    if (stopped.Count == 0)
+    {
+        var running = all.Where(s => s.IsRunning).Select(s => s.Name).ToList();
+        Console.WriteLine(running.Count > 0 ? $"nothing to resume (running: {string.Join(", ", running)})" : "nothing to resume");
+        return null;
+    }
+    return Pick(stopped, "resume", "stopped");
+}
+
+// shell / code without a name: the only running sandbox, else choose from all of them (stopped ones are
+// resumed by the caller's EnsureRunningAsync). null = the user cancelled.
+static async Task<SbxSandbox?> ResolveOrPick(SandmanClient client, string? name, string verb, CancellationToken ct)
+{
+    if (!string.IsNullOrEmpty(name)) return await client.GetAsync(name, ct);
+    var all = (await client.ListAsync(ct)).OrderBy(s => s.Name, StringComparer.Ordinal).ToList();
+    if (all.Count == 0) throw new SandmanException("no sbx sandboxes; create one with: sbx up <profile> <repo-url>");
+    var running = all.Where(s => s.IsRunning).ToList();
+    if (running.Count == 1)
+    {
+        Console.Error.WriteLine($"(using the only running sandbox: {running[0].Name})");
+        return running[0];
+    }
+    return Pick(all, verb, "sandboxes");
+}
+
+// Numbered list with the same columns as `sbx ls`; reads a number (or a name). null = Enter (cancel).
+static SbxSandbox? Pick(IReadOnlyList<SbxSandbox> list, string verb, string what)
+{
+    if (Console.IsInputRedirected)
+        throw new SandmanException($"name required ({what}: {string.Join(", ", list.Select(s => s.Name))})");
+
+    var w = Math.Max(4, list.Max(s => s.Name.Length));
+    var nw = list.Count.ToString().Length + 1;
+    Console.WriteLine($"{"#".PadLeft(nw)}  {"NAME".PadRight(w)}  {"STATE",-10}  EGRESS");
+    for (var i = 0; i < list.Count; i++)
+        Console.WriteLine($"{(i + 1 + ")").PadLeft(nw)}  {list[i].Name.PadRight(w)}  {list[i].State,-10}  {Describe(list[i].Egress)}");
+    while (true)
+    {
+        Console.Write(list.Count == 1 ? $"{verb} [1, Enter = cancel]: " : $"{verb} which [1-{list.Count}, Enter = cancel]: ");
+        var input = Console.ReadLine()?.Trim();
+        if (string.IsNullOrEmpty(input)) return null;
+        if (int.TryParse(input, out var n) && n >= 1 && n <= list.Count) return list[n - 1];
+        var byName = list.FirstOrDefault(s => s.Name == input);
+        if (byName is not null) return byName;
+        Console.WriteLine($"  enter a number from 1 to {list.Count}");
+    }
 }
 
 static int[] ParsePorts(string spec)

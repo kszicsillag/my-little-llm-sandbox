@@ -28,13 +28,13 @@ sbx up standard https://github.com/me/repo    # ~10 s
 sbx shell repo
 sbx ls                                        # state and egress (locked / OPEN) of every sbx sandbox
 sbx stop repo                                 # stop now instead of waiting for idle auto-suspend
-sbx resume repo                               # start it again (shell, code and exec also resume it)
+sbx resume                                    # pick a stopped sandbox to start (shell, code and exec also resume it)
 sbx down repo                                 # "rebuild": volume is kept (asks first; --yes to skip)
 sbx up standard https://github.com/me/repo    # state and workspace are back
 sbx purge repo                                # delete sandbox + volume
 ```
 
-If exactly one sbx sandbox is running, you can leave out `<name>` for `shell`, `code`, `allow-vscode`, `allow-all`, `lockdown`, `learned`, `preview`, `stop` and `egress`. For example, `sbx allow-all 30m` or `sbx preview 8000`. `up`, `exec`, `resume`, `down` and `purge` always need a name. `sbx <command> --help` shows the arguments.
+If exactly one sbx sandbox is running, you can leave out `<name>` for `shell`, `code`, `allow-vscode`, `allow-all`, `lockdown`, `learned`, `preview`, `stop` and `egress`. For example, `sbx allow-all 30m` or `sbx preview 8000`. `shell` and `code` without a name, when not exactly one is running, list all sandboxes and ask which one to use; a stopped one is resumed first, so `sbx code` alone gets you from a stopped sandbox to a tunnel. `resume` without a name lists the stopped sandboxes and asks which one to start. `up`, `exec`, `down` and `purge` always need a name. `sbx <command> --help` shows the arguments.
 
 **Standard** profile: run `gh auth login` and `claude` once inside the sandbox. The logins are stored on the volume and survive rebuilds.
 
