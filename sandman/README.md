@@ -38,7 +38,8 @@ dotnet run --project src/Sandman.Tray
 | `secrets` | ✅ hidden input. Both Anthropic keys go into one `anthropic` secret in a single call (`sbx.sh` wrote them separately, so the second replaced the first) |
 | `up` | ✅ `--dry-run` prints the request. Same profiles and settings as `sbx.sh` (`SBX_IMAGE`, `SBX_CPU`, `SBX_MEMORY`, `SBX_ROOT_DISK`, `SBX_VOLUME_SIZE`, `SBX_VSCODE=1`, `SBX_ALLOW`). The YAML is converted to the REST body as-is, except that `diskId` moves to `sourcesRef.diskImage.id` |
 | `shell` | ✅ PTY exec session as `dev` (no root shell + `sudo`), resumes a stopped sandbox, warns when egress is open. Local raw mode: Windows console modes (VT input/output, UTF-8 code pages) or `stty raw -echo`; window resizes are passed through |
-| `code` | still in `sbx.sh` |
+| `code` | ✅ logs in first if needed (device code via the same PTY session as `shell`), starts the tunnel with nohup + pidfile (reused if running), idle auto-suspend 3600 s, prints the connect URLs for the real workspace path |
+| `image` | still in `sbx.sh` (the SDK can't build a disk image from a local directory) |
 
 Under Git Bash on Windows, export `MSYS_NO_PATHCONV=1` before passing absolute sandbox paths to `sbx exec`. Otherwise
 Git Bash rewrites `/persist` to `C:/Program Files/Git/persist` before `sbx.exe` sees it. PowerShell doesn't do this.

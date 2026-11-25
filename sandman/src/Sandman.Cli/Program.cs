@@ -100,7 +100,7 @@ allowAll.SetAction(async (pr, ct) => await Run(async client =>
     var deadline = await SandmanClient.AllowAllAsync(sb, ttl, dry ? PrintDiff : null, ct);
     if (dry) return;
     Console.WriteLine(deadline is { } d
-        ? $"egress OPEN for '{sb.Name}' until {d.ToLocalTime():HH:mm} (auto-lockdown while the Sandman tray is running, or on any later `sbx` / `sbx.sh lockdown`)"
+        ? $"egress OPEN for '{sb.Name}' until {d.ToLocalTime():HH:mm} (auto-lockdown while the Sandman tray is running, from any machine; otherwise: sbx lockdown {sb.Name})"
         : $"egress OPEN for '{sb.Name}' until: sbx lockdown {sb.Name}");
     Console.WriteLine("still enforced: token injection (github/anthropic), block-repo-delete. NOT enforced: data exfiltration, untrusted downloads.");
 }));
@@ -142,7 +142,7 @@ up.SetAction(async (pr, ct) => await Run(async client =>
     }
 
     var sb = await client.UpAsync(o, plan, Console.Error.WriteLine, Console.Out.Write, Console.Error.Write, ct);
-    Console.WriteLine($"ready: sbx.sh shell {sb.Name}");
+    Console.WriteLine($"ready: sbx shell {sb.Name}   (VS Code: sbx code {sb.Name})");
 }));
 root.Subcommands.Add(up);
 
@@ -163,6 +163,38 @@ shell.SetAction(async (pr, ct) => await Run(async client =>
     if (exit != 0) Console.Error.WriteLine($"(shell exited with {exit})");
 }));
 root.Subcommands.Add(shell);
+
+// code [name]: VS Code Remote Tunnel (logs in first if needed, via an interactive device-code session)
+var codeName = new Argument<string?>("name") { Arity = ArgumentArity.ZeroOrOne, Description = "sandbox name (default: the only running one)" };
+var code = new Command("code", "start a VS Code Remote Tunnel (connect from desktop VS Code)") { codeName };
+code.SetAction(async (pr, ct) => await Run(async client =>
+{
+    var sb = await Resolve(client, pr.GetValue(codeName), ct);
+    await client.EnsureRunningAsync(sb, Console.Error.WriteLine, ct);
+    var tunnel = VsCode.TunnelName(sb.Name);
+    await VsCode.SetIdleTimeoutAsync(sb, 3600, ct);
+
+    if (!await VsCode.IsLoggedInAsync(sb, ct))
+    {
+        Console.Error.WriteLine("VS Code tunnel is not logged in yet: starting device code login (Microsoft account)...");
+        using (Sandman.Cli.RawTerminal.Enter())
+            await Shell.RunAsync(sb, VsCode.LoginCommand, Console.OpenStandardInput(), Console.OpenStandardOutput(), Sandman.Cli.RawTerminal.Size, ct);
+        if (!await VsCode.IsLoggedInAsync(sb, ct))
+            throw new SandmanException($"login failed or was cancelled; retry: sbx code {sb.Name}");
+    }
+
+    Console.Write(await VsCode.StartTunnelAsync(sb, tunnel, ct));
+    var ws = await VsCode.WorkspacePathAsync(sb, ct);
+    Console.WriteLine($"connect: VS Code > Remote Explorer > Tunnels > {tunnel}");
+    if (ws is not null)
+    {
+        Console.WriteLine($"  or:    code --folder-uri vscode-remote://tunnel+{tunnel}{ws}");
+        Console.WriteLine($"  or:    https://vscode.dev/tunnel/{tunnel}{ws}");
+        Console.WriteLine($"trust:   on the first prompt choose 'Trust the authors of all files in the parent folder' ({ws[..Math.Max(1, ws.LastIndexOf('/'))]})");
+    }
+    else Console.WriteLine($"  or:    https://vscode.dev/tunnel/{tunnel}");
+}));
+root.Subcommands.Add(code);
 
 // exec <name> <command...>: everything after the name is the remote command, verbatim (joined with
 // spaces and run by bash -c, like sbx.sh's "$*"). Dispatched before the parser so `-la` etc. aren't sbx options;
@@ -240,7 +272,7 @@ allowVsCode.SetAction(async (pr, ct) => await Run(async client =>
     if (added.Count == 0) { Console.WriteLine("VS Code tunnel hosts already allowed"); return; }
     if (dry) return;
     Console.WriteLine($"added: {string.Join(" ", added)}");
-    Console.WriteLine($"VS Code tunnel hosts allowed for '{sb.Name}'; next: sbx.sh code {sb.Name}");
+    Console.WriteLine($"VS Code tunnel hosts allowed for '{sb.Name}'; next: sbx code {sb.Name}");
 }));
 root.Subcommands.Add(allowVsCode);
 
