@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Tray logic shared by the heads (Sandman.Tray.Windows, Sandman.Tray): polling, allow-all deadline
+       enforcement, operations, and the menu as plain data. No UI dependencies. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Sandman.Core\Sandman.Core.csproj" />
+  </ItemGroup>
+</Project>

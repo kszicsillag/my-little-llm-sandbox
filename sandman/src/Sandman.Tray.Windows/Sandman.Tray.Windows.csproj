@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Windows head of the tray: H.NotifyIcon's Win32 tray icon and native popup menu (submenus work, it doesn't
+       close the taskbar overflow panel), no Avalonia. Linux / macOS: Sandman.Tray. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>Sandman</AssemblyName>
+    <RootNamespace>Sandman.Tray.Windows</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <!-- `dotnet publish`: one Sandman.exe on the installed .NET runtime, like sbx. -->
+  <PropertyGroup Condition="'$(_IsPublishing)' == 'true'">
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">$(NETCoreSdkRuntimeIdentifier)</RuntimeIdentifier>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="H.NotifyIcon" />
+    <ProjectReference Include="..\Sandman.Tray.Core\Sandman.Tray.Core.csproj" />
+  </ItemGroup>
+</Project>

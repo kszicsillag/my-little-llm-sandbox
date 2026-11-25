@@ -4,10 +4,25 @@
     <AssemblyName>Sandman</AssemblyName>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
   </PropertyGroup>
+  <!-- `dotnet publish`: one Sandman(.exe) on the installed .NET runtime, like sbx. Avalonia's native libraries
+       (Skia, HarfBuzz, ANGLE) go into the bundle too and are extracted on first start. -->
+  <PropertyGroup Condition="'$(_IsPublishing)' == 'true'">
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">$(NETCoreSdkRuntimeIdentifier)</RuntimeIdentifier>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+  </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Avalonia" />
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Themes.Fluent" />
-    <ProjectReference Include="..\Sandman.Core\Sandman.Core.csproj" />
+    <ProjectReference Include="..\Sandman.Tray.Core\Sandman.Tray.Core.csproj" />
   </ItemGroup>
+  <!-- SkiaSharp / HarfBuzz ship ~100 MB of native .pdb files next to their libraries; don't publish them
+       (our own symbols are embedded, see Directory.Build.props). -->
+  <Target Name="DropPdbsFromPublish" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(Extension)' == '.pdb'" />
+    </ItemGroup>
+  </Target>
 </Project>

@@ -8,7 +8,9 @@ It doesn't need bash, Python, `aca` or `az rest`. Only disk image builds stay in
 |---|---|---|
 | `Sandman.Core` | library | config, auth, sandbox operations over the SDK |
 | `Sandman.Cli` | `sbx` | the workflow commands (`sbx --help`); usage in [`.sandbox/README.md`](../.sandbox/README.md) |
-| `Sandman.Tray` | `Sandman` | Avalonia tray icon: running count, Stop / Resume, allow-all with auto-lockdown |
+| `Sandman.Tray.Core` | library | tray logic shared by both tray apps: polling, allow-all auto-lockdown, operations, the menu as data |
+| `Sandman.Tray.Windows` | `Sandman.exe` | Windows tray: native Win32 menu via [H.NotifyIcon](https://www.nuget.org/packages/H.NotifyIcon), no Avalonia |
+| `Sandman.Tray` | `Sandman` | Linux (and macOS) tray: Avalonia `TrayIcon` |
 
 ## Setup
 
@@ -20,22 +22,30 @@ It doesn't need bash, Python, `aca` or `az rest`. Only disk image builds stay in
 
 ## Install
 
-Publish the CLI into a directory on your `PATH`:
+Publish into a directory on your `PATH`:
 
 ```sh
-dotnet publish src/Sandman.Cli -c Release -o ~/.sandman/bin   # then add ~/.sandman/bin to PATH
-dotnet publish src/Sandman.Tray -c Release -o ~/.sandman/tray  # optional: run ~/.sandman/tray/Sandman(.exe), e.g. at login
+dotnet publish src/Sandman.Cli -c Release -o ~/.sandman/bin            # then add ~/.sandman/bin to PATH
+dotnet publish src/Sandman.Tray.Windows -c Release -o ~/.sandman/bin    # tray, Windows (optional; e.g. run at login)
+dotnet publish src/Sandman.Tray -c Release -o ~/.sandman/bin            # tray, Linux / macOS
 ```
 
-The CLI publishes as a single file, `sbx` / `sbx.exe` (about 5 MB), that runs on the installed .NET 10 runtime.
-It's built for this machine's platform by default; pass `-r linux-x64`, `-r win-x64` or `-r osx-arm64` to build
+All publish as single files that run on the installed .NET 10 runtime: `sbx` / `sbx.exe` (about 5 MB), the Windows
+tray `Sandman.exe` (about 7 MB) and the Linux tray `Sandman` (about 33 MB). The Linux tray's native Avalonia
+libraries (Skia, HarfBuzz) are in the bundle; on first start they're unpacked to a `.net/Sandman` folder (set
+`DOTNET_BUNDLE_EXTRACT_BASE_DIR` to move it).
+They're built for this machine's platform by default; pass `-r linux-x64`, `-r win-x64` or `-r osx-arm64` to build
 for another. After switching between self-contained and framework-dependent builds for the same platform, delete
-`src/Sandman.Cli/obj` first. Otherwise the publish may reuse the old bundle.
+the project's `obj` folder first. Otherwise the publish may reuse the old bundle.
 
 `up` and `allow-vscode` read the profiles in `.sandbox/`. `sbx` finds them by searching upward from the current
 directory, so run it inside the repo, or set `SBX_HOME=/path/to/repo/.sandbox` to use it from anywhere.
 
-Without installing: `dotnet run --project src/Sandman.Cli -- ls` (and `dotnet run --project src/Sandman.Tray`).
+Without installing: `dotnet run --project src/Sandman.Cli -- ls`, `dotnet run --project src/Sandman.Tray.Windows`
+(or `src/Sandman.Tray` on Linux).
+
+On Windows the tray icon may start in the taskbar's overflow panel (`^`). To keep it visible: Settings →
+Personalization → Taskbar → Other system tray icons → Sandman. Windows remembers this per exe path.
 
 ## Porting status
 
@@ -79,7 +89,11 @@ from a blob or a registry.
 ## Notes
 
 - The SDK is `1.0.0-beta.1` and is pinned exactly in `Directory.Packages.props`.
+- The two tray apps share everything except the menu and icon code (`Sandman.Tray.Core`'s `TrayController` and
+  `MenuEntry`). Both list each sandbox with Resume / Stop under it; the Windows menu
+  puts the egress actions in an Egress submenu. The Avalonia menu is flat: on Windows, Avalonia draws the
+  tray menu as its own popup, which closes when a submenu takes the focus.
 - On Linux the tray uses StatusNotifierItem. Plain GNOME needs the AppIndicator extension; KDE, XFCE and Ubuntu work
   as they are.
-- The tray icon is drawn at runtime (`TrayIconArt.cs`): a grey moon when all sandboxes are asleep, amber with a count
-  when some are running.
+- The tray icon is drawn at runtime (Avalonia: `TrayIconArt.cs`, Windows: GDI+ in `IconArt.cs`): a grey moon when
+  all sandboxes are asleep, amber with a count when some are running, red when egress is open.
