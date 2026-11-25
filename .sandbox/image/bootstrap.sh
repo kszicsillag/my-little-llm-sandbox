@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sandbox-bootstrap: the "postCreateCommand" of an ACA sandbox. Idempotent; runs on every `sbx.sh up`.
+# sandbox-bootstrap: the "postCreateCommand" of an ACA sandbox. Idempotent; runs on every `sbx up`.
 #
 #   sandbox-bootstrap <standard|hardened> [repo-url]
 #
@@ -68,11 +68,11 @@ esac
 
 # Ingress URLs: the agent should report https://<id>--<port>.<region>.adcproxy.io, not localhost.
 # The sandbox knows its id and region (ADC_* env); which ports are open is only known outside
-# (`sbx.sh preview`), so the helper builds the URL but cannot check it.
+# (`sbx preview`), so the helper builds the URL but cannot check it.
 mkdir -p "$HOME/.local/bin"
 cat >"$HOME/.local/bin/sbx-url" <<'EOF'
 #!/usr/bin/env bash
-# sbx-url <port> [path]: this sandbox's ingress URL for <port> (open it from outside: sbx.sh preview <name> <port>)
+# sbx-url <port> [path]: this sandbox's ingress URL for <port> (open it from outside: sbx preview <name> <port>)
 set -euo pipefail
 port="${1:?usage: sbx-url <port> [path]}"; path="${2:-}"
 : "${ADC_SANDBOX_ID:?not in an ACA sandbox (ADC_SANDBOX_ID unset)}"
@@ -89,7 +89,7 @@ md="$HOME/.claude/CLAUDE.md"; touch "$md"
 sed -i '/^<!-- sbx:begin -->$/,/^<!-- sbx:end -->$/d' "$md"
 cat >>"$md" <<'EOF'
 <!-- sbx:begin -->
-## Running inside an ACA sandbox (managed by sbx.sh; regenerated on every bootstrap)
+## Running inside an ACA sandbox (managed by sbx; regenerated on every bootstrap)
 
 - The user cannot reach `localhost` here. Ports are reached via the sandbox ingress:
   `sbx-url <port> [path]` prints `https://<sandbox-id>--<port>.<region>.adcproxy.io/...`.
@@ -100,7 +100,7 @@ cat >>"$md" <<'EOF'
 - Vite-based dev servers (Vite, Slidev, Astro, ...) reject unknown Host headers: set
   `server: { allowedHosts: ['.adcproxy.io'] }` in the Vite config.
 - You cannot open ports or check which are open. The user must run, on their machine:
-  `sbx.sh preview <sandbox-name> <port>` (or a range, e.g. `3030-3034`). Say so when you hand out a URL.
+  `sbx preview <sandbox-name> <port>` (or a range, e.g. `3030-3034`). Say so when you hand out a URL.
 <!-- sbx:end -->
 EOF
 

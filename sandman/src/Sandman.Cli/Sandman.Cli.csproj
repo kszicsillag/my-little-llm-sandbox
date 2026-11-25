@@ -5,6 +5,13 @@
     <RootNamespace>Sandman.Cli</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+  <!-- `dotnet publish`: one sbx(.exe) that uses the installed .NET runtime (~5 MB). The single-file host is
+       native, so it needs a RID; default to this machine's, override with -r. -->
+  <PropertyGroup Condition="'$(_IsPublishing)' == 'true'">
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">$(NETCoreSdkRuntimeIdentifier)</RuntimeIdentifier>
+  </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="System.CommandLine" />
     <ProjectReference Include="..\Sandman.Core\Sandman.Core.csproj" />

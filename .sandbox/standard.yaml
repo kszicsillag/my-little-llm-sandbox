@@ -1,5 +1,5 @@
 # ACA Sandbox manifest: STANDARD profile (devcontainer "standard" approach).
-# Rendered by .sandbox/sbx.sh (envsubst) and applied with `aca sandbox apply`.
+# Rendered and created by `sbx up` (Sandman CLI, ../sandman).
 #
 # - Agent and gh log in interactively inside the sandbox; login state lives on the
 #   per-repo DataDisk volume (/persist), so it survives sandbox deletion.

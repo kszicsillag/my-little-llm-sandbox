@@ -7,31 +7,34 @@ These templates apply the devcontainer approach to Azure Container Apps Sandboxe
 | `Dockerfile` + features | [`image/Dockerfile`](image/Dockerfile) → disk image `agent-base-v3` (built remotely; base image, Claude Code and VS Code CLI pinned) |
 | `devcontainer.json` | [`standard.yaml`](standard.yaml) / [`hardened.yaml`](hardened.yaml) (sandbox manifests) |
 | `postCreateCommand` | [`image/bootstrap.sh`](image/bootstrap.sh) (`sandbox-bootstrap` in the image), then the **project's own** `<repo>/.sandbox/setup.sh` |
-| VS Code "Reopen in Container" | `sbx.sh code <name>` → VS Code Remote Tunnel; ports such as 8000 forward to your `localhost` |
+| VS Code "Reopen in Container" | `sbx code <name>` → VS Code Remote Tunnel; ports such as 8000 forward to your `localhost` |
 | Named volumes + workspace bind mount | One `DataDisk` volume per repo (`persist-<name>`) at `/persist`. It holds `$HOME` state and the cloned repo |
-| "Reopen in container" / rebuild | `sbx.sh up` / `sbx.sh down` + `up` |
+| "Reopen in container" / rebuild | `sbx up` / `sbx down` + `up` |
 | OneCLI gateway (hardened) | Egress proxy: default Deny, allowlist, credentials injected from sandbox-group secrets |
 
 ## Prerequisites
 
 - The `infra/` deployment (sandbox group and data-plane role).
-- The `aca` CLI, configured: `aca config sandbox set --group <sandbox_group_name>`.
-- Bash (Git Bash on Windows), `python`, and `envsubst`.
+- `az login`. The `sbx` CLI uses that session.
+- The `aca` CLI, configured: `aca config sandbox set --group <sandbox_group_name>`. `sbx` reads the same config (`~/.aca/config.json`), and `aca` itself is only needed for `sbx.sh image`.
+- The **`sbx` CLI** from [`../sandman`](../sandman/) (C#, on the ACA Sandboxes .NET SDK; .NET 10 SDK). See [Install](../sandman/README.md#install). The optional **Sandman tray** shows running sandboxes and closes expired allow-all windows.
+- For `sbx.sh image` only: Bash (Git Bash on Windows).
 
 ## Usage
 
 ```sh
-.sandbox/sbx.sh image                                   # once per Dockerfile change (~80 s)
-.sandbox/sbx.sh up standard https://github.com/me/repo  # ~10 s
-.sandbox/sbx.sh shell repo
-.sandbox/sbx.sh stop repo                               # stop now instead of waiting for idle auto-suspend
-.sandbox/sbx.sh resume repo                             # start it again
-.sandbox/sbx.sh down repo                               # "rebuild": volume is kept
-.sandbox/sbx.sh up standard https://github.com/me/repo  # state and workspace are back
-.sandbox/sbx.sh purge repo                              # delete sandbox + volume
+.sandbox/sbx.sh image                         # once per Dockerfile change (~80 s)
+sbx up standard https://github.com/me/repo    # ~10 s
+sbx shell repo
+sbx ls                                        # state and egress (locked / OPEN) of every sbx sandbox
+sbx stop repo                                 # stop now instead of waiting for idle auto-suspend
+sbx resume repo                               # start it again (shell, code and exec also resume it)
+sbx down repo                                 # "rebuild": volume is kept (asks first; --yes to skip)
+sbx up standard https://github.com/me/repo    # state and workspace are back
+sbx purge repo                                # delete sandbox + volume
 ```
 
-If exactly one sbx sandbox is running, you can leave out `<name>` for `shell`, `code`, `allow-vscode`, `allow-all`, `lockdown`, `learned` and `preview`. For example, `sbx.sh allow-all 30m` or `sbx.sh preview 8000`. `up`, `exec`, `down` and `purge` always need a name.
+If exactly one sbx sandbox is running, you can leave out `<name>` for `shell`, `code`, `allow-vscode`, `allow-all`, `lockdown`, `learned`, `preview`, `stop` and `egress`. For example, `sbx allow-all 30m` or `sbx preview 8000`. `up`, `exec`, `resume`, `down` and `purge` always need a name. `sbx <command> --help` shows the arguments.
 
 **Standard** profile: run `gh auth login` and `claude` once inside the sandbox. The logins are stored on the volume and survive rebuilds.
 
@@ -71,42 +74,42 @@ For hardened sandboxes, `SBX_ALLOW` adds Allow rules for that one sandbox:
 ```sh
 export SBX_IMAGE=agent-dotnet-v2 SBX_CPU=2000m SBX_MEMORY=4096Mi SBX_ROOT_DISK=8Gi SBX_VOLUME_SIZE=12Gi
 export SBX_ALLOW="api.nuget.org,globalcdn.nuget.org,cdn.playwright.dev,playwright.download.prss.microsoft.com,storage.googleapis.com/chrome-for-testing-public/*"
-.sandbox/sbx.sh up hardened https://github.com/bmeviaumb11/skalazhato-ea.git skalazhato-ea
+sbx up hardened https://github.com/bmeviaumb11/skalazhato-ea.git skalazhato-ea
 ```
 
 - **Size L (2 vCPU / 4 GiB).** At 2 GiB, headless Chrome gets OOM-killed during `Page.printToPDF` when building the decks. Check with `sudo dmesg | grep -i oom`. L uses 2 cores of the regional quota.
-- **Long commands:** `aca sandbox exec` times out on long runs, such as the full CI. Start them with `nohup … &` and poll a log file.
+- **Long commands:** `sbx exec` streams output and doesn't hit `aca sandbox exec`'s timeout, but it ends if your PC sleeps or the connection drops. For the full CI, start it with `nohup … &` and poll a log file.
 - **Not included:** the converter's Azure OpenAI calls (`AZURE_OPENAI_ENDPOINT`). They'd need the endpoint host allowed, plus a key or a managed-identity token injected by the egress proxy.
 
 ### VS Code (Remote Tunnels)
 
 ```sh
-.sandbox/sbx.sh code repo      # logs in if needed (device code, Microsoft), then starts the tunnel "sbx-repo"
+sbx code repo      # logs in if needed (device code, Microsoft), then starts the tunnel "sbx-repo"
 
 # hardened, from scratch:
-SBX_VSCODE=1 .sandbox/sbx.sh up hardened <repo-url> repo && .sandbox/sbx.sh code repo
+SBX_VSCODE=1 sbx up hardened <repo-url> repo && sbx code repo
 ```
 
-If the tunnel isn't logged in yet, `sbx.sh code` runs `code tunnel user login --provider microsoft` in an interactive shell as `dev`. Open the device code URL it prints, sign in, and the tunnel starts right after.
+If the tunnel isn't logged in yet, `sbx code` runs `code tunnel user login --provider microsoft` in an interactive terminal session as `dev`. Open the device code URL it prints, sign in, and the tunnel starts right after.
 
 Connect from desktop VS Code: install the *Remote - Tunnels* extension, then go to Remote Explorer → Tunnels → `sbx-repo`. Or open `https://vscode.dev/tunnel/sbx-repo`.
 
-- **Workspace Trust** is stored in your desktop VS Code, per remote path, so the sandbox can't pre-trust anything. Open the real path that `sbx.sh code` prints (`/persist/workspace/<repo>`, not the `~/workspace` symlink). On the first prompt, trust the parent folder `/persist/workspace`. That covers every repo and every rebuild, as long as the tunnel name stays the same.
+- **Workspace Trust** is stored in your desktop VS Code, per remote path, so the sandbox can't pre-trust anything. Open the real path that `sbx code` prints (`/persist/workspace/<repo>`, not the `~/workspace` symlink). On the first prompt, trust the parent folder `/persist/workspace`. That covers every repo and every rebuild, as long as the tunnel name stays the same.
 - Use the **Microsoft** login provider. GitHub login conflicts with the hardened profile's `github.com` header injection.
-- `sbx.sh code` sets idle auto-suspend to 1 h, because tunnel traffic doesn't count as activity. Disk-mode suspend stops the tunnel.
+- `sbx code` sets idle auto-suspend to 1 h, because tunnel traffic doesn't count as activity. Disk-mode suspend stops the tunnel.
 - **Standard** keeps the tunnel login on the volume. **Hardened** doesn't, so you log in again after each rebuild.
 - `SBX_VSCODE=1` enables the commented-out VS Code block in `hardened*.yaml`, for that sandbox only. Without it the hardened profiles block the tunnel.
-- Already created a hardened sandbox without it? Run `sbx.sh allow-vscode <name>`. It adds the same rules to the live egress policy without a rebuild. A later `down` + `up` drops them again unless you pass `SBX_VSCODE=1`.
-- **Forwarded ports go through dev tunnels, even in desktop VS Code.** The Ports tab shows `https://<id>-<port>.<region>.devtunnels.ms`, not `localhost`. That works, but the first load is slow. Use `sbx.sh preview` (below) for a fast preview.
+- Already created a hardened sandbox without it? Run `sbx allow-vscode <name>` (`--dry-run` shows the rules first). It adds the same rules to the live egress policy without a rebuild. A later `down` + `up` drops them again unless you pass `SBX_VSCODE=1`.
+- **Forwarded ports go through dev tunnels, even in desktop VS Code.** The Ports tab shows `https://<id>-<port>.<region>.devtunnels.ms`, not `localhost`. That works, but the first load is slow. Use `sbx preview` (below) for a fast preview.
 - **Extensions get the injected GitHub token.** Injection is per host, so any extension that calls `api.github.com` (GitHub, Pull Requests) is authenticated as you, within the PAT's scope. Be selective about extensions in hardened sandboxes.
 - **Copilot doesn't work in hardened** (`*.githubcopilot.com` is blocked), and neither does Microsoft/Copilot telemetry. Allow `api.githubcopilot.com`, `api.individual.githubcopilot.com` and `exp.individual.githubcopilot.com` if you want it.
 
-### Preview a web server (`sbx.sh preview`)
+### Preview a web server (`sbx preview`)
 
 ```sh
-.sandbox/sbx.sh preview repo [port] [email]   # default port 8000, email = your `az account show` user
+sbx preview repo [port] [email]   # default port 8000, email = your signed-in Azure user
 # → https://<sandbox-id>--<port>.<region>.adcproxy.io   (open in the browser, e.g. append /skalazhato/)
-.sandbox/sbx.sh preview repo 3030-3034        # a range: one URL per port (max 20)
+sbx preview repo 3030-3034        # a range: one URL per port (max 20)
 ```
 
 This exposes the port through the sandbox's own ingress, which doesn't go through dev tunnels or the egress proxy. It's restricted to one Entra identity in your tenant and is never anonymous.
@@ -115,7 +118,7 @@ This exposes the port through the sandbox's own ingress, which doesn't go throug
 - **Inside the sandbox, `sbx-url <port> [path]` prints the same URL.** It's built from `ADC_SANDBOX_ID` and `ADC_PROXY_DNS_SUFFIX`. Bootstrap also writes a marked block into `~/.claude/CLAUDE.md`. It tells the agent to report `sbx-url` URLs instead of `localhost`, to bind to `0.0.0.0`, and that you have to open the port. The agent can't see which ports are open, because only the management API knows.
 
 - Verified with `mkdocs serve`: fast, browser sign-in works, and **live reload works**. MkDocs uses HTTP long-polling, not WebSockets.
-- `aca sandbox port add --email` doesn't work as of aca 1.0.0-preview.5: it omits the required `auth.entraId.tenantIds` and gets a `400`. `sbx.sh preview` calls the same data-plane endpoint with `az rest` and adds your tenant.
+- `aca sandbox port add --email` doesn't work as of aca 1.0.0-preview.5: it omits the required `auth.entraId.tenantIds` and gets a `400`. `sbx preview` sets your tenant through the SDK.
 - Plain `aca sandbox port add` without `--email` creates an **anonymous** port. Don't use it for anything private.
 
 **Hardened** profiles. There are two, and they differ only in how Claude is billed:
@@ -127,8 +130,8 @@ This exposes the port through the sandbox's own ingress, which doesn't go throug
 
 ```sh
 claude setup-token               # on your PC, logged in with your subscription (for `hardened`)
-.sandbox/sbx.sh secrets          # GitHub fine-grained PAT + Claude token and/or API key → sandbox-group secrets
-.sandbox/sbx.sh up hardened https://github.com/me/repo
+sbx secrets                      # GitHub fine-grained PAT + Claude token and/or API key → sandbox-group secrets
+sbx up hardened https://github.com/me/repo
 ```
 
 The sandbox never sees a token. `GH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) are placeholders. The proxy injects the real values:
@@ -180,19 +183,19 @@ It prints a long-lived OAuth token. Copy it right away. Usage counts against you
 #### Store, check, rotate, remove
 
 ```sh
-.sandbox/sbx.sh secrets                        # prompts (hidden input) for all three; Enter skips one
+sbx secrets                                    # prompts (hidden input) for all three; Enter skips one
 aca sandboxgroup secret list                   # bundles in the group
 aca sandboxgroup secret show --name github     # metadata and key names
 ```
 
-- **Rotate:** run `sbx.sh secrets` again with the new value. `secret set` merges keys, so the other keys in the bundle stay as they are. Whether already-running sandboxes pick up the new value right away isn't verified, so recreate them (`sbx.sh down` + `up`) to be sure.
-- **Change PAT permissions:** edit the token on GitHub's fine-grained token page. The token value stays the same, so the secret doesn't need updating. Only a new or regenerated PAT needs `sbx.sh secrets` again.
+- **Rotate:** run `sbx secrets` again with the new value. Setting a secret **replaces all its keys**. `github` always gets both `token` and `basic`. For `anthropic`, enter the subscription token and the API key together if you use both; the one you skip is dropped. Whether already-running sandboxes pick up the new value right away isn't verified, so recreate them (`sbx down` + `up`) to be sure.
+- **Change PAT permissions:** edit the token on GitHub's fine-grained token page. The token value stays the same, so the secret doesn't need updating. Only a new or regenerated PAT needs `sbx secrets` again.
 - **Remove:** `aca sandboxgroup secret delete --name github --yes` (or `--name anthropic`). If a token may have leaked, also revoke it at the source: GitHub's fine-grained token page or the Console's API Keys page. For a `claude setup-token` token, see the Claude Code docs on revoking it.
-- `sbx.sh secrets` reads values from hidden prompts and pipes them to `aca … --from-stdin`. They don't end up in shell history, files or process arguments.
+- `sbx secrets` reads values from hidden prompts and sends them straight to the API. They don't end up in shell history, files or process arguments.
 
 **Azure portal alternative:** Container Apps Sandbox groups → *your group* → **Security → Secrets → Create**. Enter the **Secret ID** (`github` or `anthropic`) and add the key-value pairs from the table above. The same page lists, updates and deletes secrets.
 
-- The `github` / `basic` value is `base64("x-access-token:<PAT>")`. `sbx.sh secrets` computes it for you; in the portal you paste it yourself. In PowerShell, without the token landing in history:
+- The `github` / `basic` value is `base64("x-access-token:<PAT>")`. `sbx secrets` computes it for you; in the portal you paste it yourself. In PowerShell, without the token landing in history:
 
   ```powershell
   $t = Read-Host -AsSecureString "PAT"; $p = [Net.NetworkCredential]::new('', $t).Password
@@ -205,7 +208,7 @@ aca sandboxgroup secret show --name github     # metadata and key names
 Check the injection without exposing anything (in a hardened sandbox):
 
 ```sh
-.sandbox/sbx.sh exec repo 'echo $GH_TOKEN; curl -s https://api.github.com/user | head -3'
+sbx exec repo 'echo $GH_TOKEN; curl -s https://api.github.com/user | head -3'
 # prints the placeholder "injected-by-egress-proxy", then your GitHub user (not "Bad credentials")
 ```
 
@@ -216,16 +219,16 @@ To change what's allowed, edit the `egressPolicy.rules` in `hardened.yaml`. The 
 When an agent or build keeps hitting denied hosts, open egress for a short window, then turn what it used into specific rules:
 
 ```sh
-.sandbox/sbx.sh allow-all repo 30m   # default Allow for 30 min (no ttl = until lockdown)
+sbx allow-all repo 30m   # default Allow for 30 min (no ttl = until lockdown); --dry-run shows the change
 # ... run the failing build / agent task ...
-.sandbox/sbx.sh lockdown repo        # back to default Deny now (also cancels the timer)
-.sandbox/sbx.sh learned repo         # hosts reached only via the default Allow → add them to SBX_ALLOW
+sbx lockdown repo        # back to default Deny now (also cancels the timer)
+sbx learned repo         # hosts reached only via the default Allow → add them to SBX_ALLOW
 ```
 
 - Only the policy's `defaultAction` changes. The rules still match first, so **token injection and `block-repo-delete` stay in force**, and tokens still never enter the sandbox.
 - **Not protected while open:** the agent, or anything it runs, can upload repo contents anywhere, and fetch untrusted pages and binaries. That's the main prompt-injection route, so don't leave an open sandbox unattended.
-- The **ttl is a local timer** on your PC (`nohup sleep … && sbx.sh lockdown`). If the PC reboots or the timer process dies, egress stays open. `sbx.sh shell` warns when a sandbox is open. The policy also records the window in a marker rule, `allow-all-<opened>-<deadline>`, on the never-resolving host `allow-all.marker.invalid`.
-- `learned` reads `aca sandbox egress decisions`. It lists every allowed request whose `matchedRule` isn't one of the policy's named rules. Only `allow-all` lets such requests through, so they're the hosts you'd otherwise have to allow by hand.
+- The window is recorded **in the policy itself**, as a marker rule `allow-all-<opened>-<deadline>` on the never-resolving host `allow-all.marker.invalid`. The **Sandman tray** locks down expired windows, from any machine and after sleep or reboot. Without a running tray nothing closes the window, so run `sbx lockdown` yourself. `sbx ls` shows open windows and `sbx shell` warns about them.
+- `learned` reads the sandbox's egress decisions log (the sandbox must be running). It lists every allowed request whose `matchedRule` isn't one of the policy's named rules. Only `allow-all` lets such requests through, so they're the hosts you'd otherwise have to allow by hand.
 - Like `allow-vscode`, these commands edit the live policy. A `down` + `up` always starts from the clean profile.
 
 ## What persists
@@ -244,7 +247,7 @@ When an agent or build keeps hitting denied hosts, open egress for a short windo
 
 ## Verified behaviour (2026-11-12, aca 1.0.0-preview.5)
 
-- `aca sandbox exec` runs as `dev` (non-root), using the image's `USER`. `aca sandbox shell` opens as **root**, so `sbx.sh shell` switches to `dev`; otherwise logins land in `/root`. PID 1 is the platform's `tini … adc-hold`, so the image `CMD` is ignored.
+- `aca sandbox exec` runs as `dev` (non-root), using the image's `USER`. `aca sandbox shell` opens as **root**, so `sbx shell` and `sbx exec` start their sessions as `dev`; otherwise logins land in `/root`. PID 1 is the platform's `tini … adc-hold`, so the image `CMD` is ignored.
 - Volume state survived deleting and recreating the sandbox. Files on the root disk didn't.
 - Hardened profile:
   - headers were injected for GitHub API, git HTTPS and Anthropic;

@@ -1,28 +1,41 @@
 # Sandman
 
-Cross-platform companion for the [`.sandbox/`](../.sandbox/) workflow (Windows tray and Linux), built on the
+The CLI and tray for the [`.sandbox/`](../.sandbox/) workflow (Windows and Linux), built on the
 ACA Sandboxes .NET SDK ([`Microsoft.Azure.ContainerApps.Sandbox`](https://www.nuget.org/packages/Microsoft.Azure.ContainerApps.Sandbox)).
-It doesn't need bash, Python, `aca` or `az rest`.
+It doesn't need bash, Python, `aca` or `az rest`. Only disk image builds stay in `.sandbox/sbx.sh image`.
 
 | Project | Output | What |
 |---|---|---|
 | `Sandman.Core` | library | config, auth, sandbox operations over the SDK |
-| `Sandman.Cli` | `sbx` | `sbx.sh`'s commands, ported one slice at a time |
-| `Sandman.Tray` | `Sandman` | Avalonia tray icon: running count, Stop / Resume per sandbox |
+| `Sandman.Cli` | `sbx` | the workflow commands (`sbx --help`); usage in [`.sandbox/README.md`](../.sandbox/README.md) |
+| `Sandman.Tray` | `Sandman` | Avalonia tray icon: running count, Stop / Resume, allow-all with auto-lockdown |
 
 ## Setup
 
 - .NET 10 SDK.
-- The same sandbox group config as `sbx.sh`: `~/.aca/config.json` (from `aca config sandbox set`), or the
+- The sandbox group config from `aca config sandbox set` (`~/.aca/config.json`), or the
   `ACA_SUBSCRIPTION` / `ACA_RESOURCE_GROUP` / `ACA_REGION` / `ACA_SANDBOX_GROUP` environment variables.
 - Signed in with `az login`. Sandman reuses that session through `AzureCliCredential` and falls back to the other
   developer credentials. It never opens a browser.
 
+## Install
+
+Publish the CLI into a directory on your `PATH`:
+
 ```sh
-dotnet run --project src/Sandman.Cli -- ls
-dotnet run --project src/Sandman.Cli -- preview skalazhato-ea 8000
-dotnet run --project src/Sandman.Tray
+dotnet publish src/Sandman.Cli -c Release -o ~/.sandman/bin   # then add ~/.sandman/bin to PATH
+dotnet publish src/Sandman.Tray -c Release -o ~/.sandman/tray  # optional: run ~/.sandman/tray/Sandman(.exe), e.g. at login
 ```
+
+The CLI publishes as a single file, `sbx` / `sbx.exe` (about 5 MB), that runs on the installed .NET 10 runtime.
+It's built for this machine's platform by default; pass `-r linux-x64`, `-r win-x64` or `-r osx-arm64` to build
+for another. After switching between self-contained and framework-dependent builds for the same platform, delete
+`src/Sandman.Cli/obj` first. Otherwise the publish may reuse the old bundle.
+
+`up` and `allow-vscode` read the profiles in `.sandbox/`. `sbx` finds them by searching upward from the current
+directory, so run it inside the repo, or set `SBX_HOME=/path/to/repo/.sandbox` to use it from anywhere.
+
+Without installing: `dotnet run --project src/Sandman.Cli -- ls` (and `dotnet run --project src/Sandman.Tray`).
 
 ## Porting status
 

@@ -1,5 +1,5 @@
 # ACA Sandbox manifest: HARDENED profile (devcontainer "hardened" approach, OneCLI-style).
-# Rendered by .sandbox/sbx.sh (envsubst) and applied with `aca sandbox apply`.
+# Rendered and created by `sbx up` (Sandman CLI, ../sandman).
 #
 # Claude auth: SUBSCRIPTION (Pro/Max) via a `claude setup-token` OAuth token, injected as
 # `Authorization: Bearer`. Usage counts against your subscription limits.
@@ -8,7 +8,7 @@
 # ANTHROPIC_API_KEY must NOT be set here: Claude Code would prefer API-key mode.
 #
 # - No tokens inside the sandbox. The egress proxy injects credentials per request
-#   from sandbox-group secrets (create them with `sbx.sh secrets`).
+#   from sandbox-group secrets (create them with `sbx secrets`).
 # - Default Deny; only listed hosts are reachable. Rules are first-match-wins:
 #   Deny/Transform rules must come before the broader Allow for the same host.
 # - Placeholders in the environment exist only because some CLIs refuse to start
@@ -62,7 +62,7 @@ egressPolicy:
         headers:
           - operation: Set
             name: Authorization
-            # secret key "basic" = base64("x-access-token:<token>"), see sbx.sh secrets
+            # secret key "basic" = base64("x-access-token:<token>"), see `sbx secrets`
             valueRef: { secretRef: { secretId: github, secretKey: basic, format: "Basic {value}" } }
     - name: anthropic-oauth
       match: { host: "api.anthropic.com" }
@@ -71,7 +71,7 @@ egressPolicy:
         headers:
           - operation: Set
             name: Authorization
-            # secret key "oauth" = output of `claude setup-token`, see sbx.sh secrets
+            # secret key "oauth" = output of `claude setup-token`, see `sbx secrets`
             valueRef: { secretRef: { secretId: anthropic, secretKey: oauth, format: "Bearer {value}" } }
 
     # --- allowlist ---
@@ -84,7 +84,7 @@ egressPolicy:
     - { name: ubuntu-apt, match: { host: "*.ubuntu.com" }, action: { type: Allow } }
 
     # --- VS Code Remote Tunnels (opt-in) ---------------------------------------
-    # Uncomment to allow `sbx.sh code`. This opens a remote-control channel into the
+    # Uncomment to allow `sbx code`. This opens a remote-control channel into the
     # sandbox; log in with `code tunnel user login --provider microsoft`.
     # - { name: vscode-tunnels-api, match: { host: "*.tunnels.api.visualstudio.com" }, action: { type: Allow } }
     # - { name: vscode-devtunnels, match: { host: "*.devtunnels.ms" }, action: { type: Allow } }

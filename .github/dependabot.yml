@@ -1,7 +1,7 @@
 version: 2
 updates:
   # Sandbox base image digest (FROM ...@sha256:...). Rebuild the disk image after merging:
-  #   .sandbox/sbx.sh image   (with a new SBX_IMAGE name, e.g. agent-base-v2)
+  #   .sandbox/sbx.sh image   (with a new SBX_IMAGE name, e.g. agent-base-v2), then `sbx up` with that SBX_IMAGE
   - package-ecosystem: docker
     directories: ["/.sandbox/image"]
     schedule:

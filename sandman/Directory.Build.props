@@ -5,5 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <!-- symbols inside the dll/exe: a published single-file sbx is just one file -->
+    <DebugType>embedded</DebugType>
   </PropertyGroup>
 </Project>

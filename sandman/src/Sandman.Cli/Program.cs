@@ -2,8 +2,8 @@ using System.CommandLine;
 using System.Text.RegularExpressions;
 using Sandman.Core;
 
-// sbx: sbx.sh's commands over the ACA Sandboxes .NET SDK. Commands are ported one slice at a time;
-// anything not here yet still lives in .sandbox/sbx.sh.
+// sbx: the .sandbox workflow (formerly .sandbox/sbx.sh) over the ACA Sandboxes .NET SDK. Only disk image
+// builds stay in sbx.sh (`sbx.sh image`): the SDK can't build one from a local directory.
 
 var root = new RootCommand("sbx: devcontainer-style workflow for ACA Sandboxes (Sandman CLI)");
 
