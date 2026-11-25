@@ -17,7 +17,7 @@ internal static class Program
         {
             ContextMenu = new PopupMenu(),
         };
-        tray.UpdateIcon(icons.Get(0, false));
+        tray.UpdateIcon(icons.Get(false));
         tray.Create();
         tray.UpdateToolTip("Sandman");
 
@@ -25,7 +25,7 @@ internal static class Program
         // when it opens).
         void Update()
         {
-            tray.UpdateIcon(icons.Get(controller.RunningCount, controller.AnyEgressOpen));
+            tray.UpdateIcon(icons.Get(controller.RunningCount > 0));
             var tip = controller.ToolTip;
             tray.UpdateToolTip(tip.Length <= 127 ? tip : tip[..126] + "…");   // NOTIFYICONDATA.szTip: 128 chars
             var menu = new PopupMenu();

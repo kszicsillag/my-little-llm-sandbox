@@ -31,6 +31,12 @@ public sealed class TrayController : IDisposable
     private string? _error;
     private int _refreshing;                       // 0/1, guards overlapping refreshes
 
+    // VS Code tunnel per running sandbox (on _ui only): true / false, null = the check failed. Checked once per
+    // running period (an exec might count as activity and hold off idle auto-suspend, so no polling), after our own
+    // tunnel action, and on Refresh. Dropped when the sandbox stops: suspend ends the tunnel too.
+    private readonly Dictionary<string, bool?> _tunnel = [];
+    private readonly HashSet<string> _tunnelChecking = [];
+
     public TrayController(SynchronizationContext ui)
     {
         _ui = ui;
@@ -42,7 +48,6 @@ public sealed class TrayController : IDisposable
     public event Action? Changed;
 
     public int RunningCount => _sandboxes.Count(s => s.IsRunning);
-    public bool AnyEgressOpen => _sandboxes.Any(s => s.Egress.IsOpen);
 
     public string ToolTip
     {
@@ -78,8 +83,45 @@ public sealed class TrayController : IDisposable
         {
             EnforceDeadlines();
             ScheduleNextDeadline();
+            CheckTunnels();
             Changed?.Invoke();
         }, null);
+    }
+
+    /// <summary>Refresh from the menu: also re-checks the tunnels.</summary>
+    private void RefreshAll() => _ui.Post(_ =>
+    {
+        _tunnel.Clear();
+        _ = RefreshAsync();
+    }, null);
+
+    /// <summary>Forget tunnels of sandboxes that stopped; check running ones we know nothing about (UI context).</summary>
+    private void CheckTunnels()
+    {
+        var running = _sandboxes.Where(s => s.IsRunning).ToList();
+        foreach (var name in _tunnel.Keys.Except(running.Select(s => s.Name)).ToList()) _tunnel.Remove(name);
+        if (_client is not { } client) return;
+
+        foreach (var sb in running)
+        {
+            if (_tunnel.ContainsKey(sb.Name) || _busy.Contains(sb.Name) || !_tunnelChecking.Add(sb.Name)) continue;
+            _ = Task.Run(async () =>
+            {
+                bool? up;
+                try
+                {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                    up = await VsCode.IsTunnelRunningAsync(sb, cts.Token).ConfigureAwait(false);
+                }
+                catch { up = null; }
+                _ui.Post(_ =>
+                {
+                    _tunnelChecking.Remove(sb.Name);
+                    if (_sandboxes.Any(s => s.Name == sb.Name && s.IsRunning)) _tunnel[sb.Name] = up;
+                    Changed?.Invoke();
+                }, null);
+            });
+        }
     }
 
     /// <summary>
@@ -101,7 +143,7 @@ public sealed class TrayController : IDisposable
         }
         if (_sandboxes.Count == 0) menu.Add(MenuEntry.Separator);
 
-        menu.Add(new("Refresh", Click: () => _ = RefreshAsync()));
+        menu.Add(new("Refresh", Click: RefreshAll));
         menu.Add(new("Quit Sandman", Click: quit));
         return menu;
     }
@@ -112,7 +154,10 @@ public sealed class TrayController : IDisposable
         var note = !e.IsOpen ? ""
             : e.Window?.Deadline is { } d ? $"  ⚠ egress open until {d.ToLocalTime():HH:mm}"
             : "  ⚠ egress OPEN, no timer";
-        return $"{(sb.IsRunning ? "●" : "○")}  {sb.Name}  ({(_busy.Contains(sb.Name) ? "working…" : sb.State)}){note}";
+        var state = _busy.Contains(sb.Name) ? "working…"
+            : sb.IsRunning && _tunnel.GetValueOrDefault(sb.Name) == true ? $"{sb.State} · VS Code tunnel"
+            : sb.State;
+        return $"{(sb.IsRunning ? "●" : "○")}  {sb.Name}  ({state}){note}";
     }
 
     private List<MenuEntry> Actions(SbxSandbox sb, bool nested)
@@ -123,6 +168,10 @@ public sealed class TrayController : IDisposable
         // ▶ with U+FE0E: text presentation, not the colour emoji.
         if (sb.IsResumable) items.Add(new("▶︎  Resume", Click: () => RunOp(sb, "resume", (c, ct) => c.ResumeAsync(sb, ct))));
         if (sb.IsRunning) items.Add(new("■  Stop", Click: () => RunOp(sb, "stop", (c, ct) => c.StopAsync(sb, ct))));
+        if (sb.IsRunning || sb.IsResumable)
+            items.Add(new(!sb.IsRunning ? "</>  Resume + VS Code tunnel"
+                    : _tunnel.GetValueOrDefault(sb.Name) == true ? "</>  Open in VS Code" : "</>  VS Code tunnel",
+                Click: () => RunOp(sb, "code", (c, ct) => CodeAsync(c, sb, ct))));
 
         var e = sb.Egress;
         if (!e.HasRules) return items;   // standard profile: open egress by design
@@ -141,6 +190,26 @@ public sealed class TrayController : IDisposable
         if (nested) items.Add(new("Egress", Children: egress));
         else items.AddRange(egress);
         return items;
+    }
+
+    /// <summary>
+    /// sbx code from the tray: resume (and wait), start the tunnel, open it in desktop VS Code. The one-time device-code
+    /// login needs a terminal, so if the tunnel isn't logged in yet this opens one running `sbx code name` instead.
+    /// </summary>
+    private async Task CodeAsync(SandmanClient client, SbxSandbox sb, CancellationToken ct)
+    {
+        await client.EnsureRunningAsync(sb, ct: ct, explicitResume: true);
+        if (!await VsCode.IsLoggedInAsync(sb, ct))
+        {
+            Launcher.SbxInTerminal("code", sb.Name);
+            return;
+        }
+        var tunnel = VsCode.TunnelName(sb.Name);
+        await VsCode.SetIdleTimeoutAsync(sb, 3600, ct);
+        await VsCode.StartTunnelAsync(sb, tunnel, ct);
+        _ui.Post(_ => _tunnel[sb.Name] = true, null);   // before StartOp's refresh, which drops it if not Running
+        var ws = await VsCode.WorkspacePathAsync(sb, ct);
+        await Launcher.OpenTunnelAsync(tunnel, ws);
     }
 
     /// <summary>Lock down every sandbox whose allow-all window has expired (UI context).</summary>
@@ -177,7 +246,7 @@ public sealed class TrayController : IDisposable
         {
             try
             {
-                using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+                using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(4));   // resume alone may take 2
                 await op(client, cts.Token).ConfigureAwait(false);
             }
             catch (Exception e) { _error = $"{verb} {sb.Name} failed: {Friendly(e)}"; }

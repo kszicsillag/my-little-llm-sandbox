@@ -34,12 +34,19 @@ public static class VsCode
     public static async Task<bool> IsLoggedInAsync(SbxSandbox sandbox, CancellationToken ct = default) =>
         await SandmanClient.ExecAsync(sandbox, "code tunnel user show >/dev/null 2>&1", _ => { }, _ => { }, ct) == 0;
 
-    /// <summary>Start the tunnel unless it already runs (PID file, not pgrep: the exec's own command line would match). Returns the log tail.</summary>
+    // PID file, not pgrep: the exec's own command line would match.
+    private const string TunnelRunning = "[ -f /tmp/code-tunnel.pid ] && kill -0 $(cat /tmp/code-tunnel.pid) 2>/dev/null";
+
+    /// <summary>Whether the tunnel process started by <see cref="StartTunnelAsync"/> is alive.</summary>
+    public static async Task<bool> IsTunnelRunningAsync(SbxSandbox sandbox, CancellationToken ct = default) =>
+        await SandmanClient.ExecAsync(sandbox, TunnelRunning, _ => { }, _ => { }, ct) == 0;
+
+    /// <summary>Start the tunnel unless it already runs. Returns the log tail.</summary>
     public static async Task<string> StartTunnelAsync(SbxSandbox sandbox, string tunnel, CancellationToken ct = default)
     {
         var t = Manifest.ShQuote(tunnel);
         var script =
-            "if [ -f /tmp/code-tunnel.pid ] && kill -0 $(cat /tmp/code-tunnel.pid) 2>/dev/null; then echo 'tunnel already running'; " +
+            $"if {TunnelRunning}; then echo 'tunnel already running'; " +
             $"else nohup code tunnel --accept-server-license-terms --name {t} >/tmp/code-tunnel.log 2>&1 </dev/null & echo $! >/tmp/code-tunnel.pid; sleep 8; fi; " +
             "tail -4 /tmp/code-tunnel.log";
         var (exit, output) = await CaptureAsync(sandbox, script, ct);

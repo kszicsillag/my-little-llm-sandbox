@@ -90,10 +90,14 @@ from a blob or a registry.
 
 - The SDK is `1.0.0-beta.1` and is pinned exactly in `Directory.Packages.props`.
 - The two tray apps share everything except the menu and icon code (`Sandman.Tray.Core`'s `TrayController` and
-  `MenuEntry`). Both list each sandbox with Resume / Stop under it; the Windows menu
+  `MenuEntry`). Both list each sandbox with Resume / Stop and "VS Code tunnel"
+  under it (`sbx code` from the tray: resumes, starts the tunnel and opens it with `code --folder-uri`, or vscode.dev
+  without `code` on PATH; the one-time tunnel login opens a terminal running `sbx code <name>`). A running sandbox shows
+  "Running · VS Code tunnel" while its tunnel is up. That's checked once per running period, after the tray's own
+  tunnel action and on Refresh, not on every poll: the check is an exec, which might hold off idle auto-suspend. The Windows menu
   puts the egress actions in an Egress submenu. The Avalonia menu is flat: on Windows, Avalonia draws the
   tray menu as its own popup, which closes when a submenu takes the focus.
 - On Linux the tray uses StatusNotifierItem. Plain GNOME needs the AppIndicator extension; KDE, XFCE and Ubuntu work
   as they are.
 - The tray icon is drawn at runtime (Avalonia: `TrayIconArt.cs`, Windows: GDI+ in `IconArt.cs`): a grey moon when
-  all sandboxes are asleep, amber with a count when some are running, red when egress is open.
+  all sandboxes are asleep, amber when some are running (the count and open egress are in the tooltip and the menu).

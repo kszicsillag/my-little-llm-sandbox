@@ -90,12 +90,14 @@ public sealed partial class SandmanClient
     /// <summary>
     /// Make sure the sandbox runs (resume + wait) when Config.AutoResume allows it. Returns the fresh
     /// state: true = it was resumed. Throws if it's not running and can't be resumed.
+    /// <paramref name="explicitResume"/>: the user asked for the resume (e.g. a tray action), so AutoResume doesn't apply.
     /// </summary>
-    public async Task<bool> EnsureRunningAsync(SbxSandbox sandbox, Action<string>? progress = null, CancellationToken ct = default)
+    public async Task<bool> EnsureRunningAsync(SbxSandbox sandbox, Action<string>? progress = null, CancellationToken ct = default,
+        bool explicitResume = false)
     {
         var state = (await sandbox.Resource.GetAsync(ct)).Value.Data?.State?.ToString();
         if (state == "Running") return false;
-        if (!Config.AutoResume)
+        if (!Config.AutoResume && !explicitResume)
             throw new SandmanException($"'{sandbox.Name}' is {state}; resume it first: sbx resume {sandbox.Name}");
         if (state is not ("Stopped" or "Idle"))
             throw new SandmanException($"'{sandbox.Name}' is {state}; try again in a moment");

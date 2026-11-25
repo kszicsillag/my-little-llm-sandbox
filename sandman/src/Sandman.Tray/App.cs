@@ -19,14 +19,14 @@ public sealed class App : Application
 {
     private TrayIcon _tray = null!;
     private TrayController _controller = null!;
-    private (int Running, bool Open)? _lastIcon;
+    private bool? _lastIcon;
     private string? _menuSignature;
 
     public override void Initialize() => Styles.Add(new FluentTheme());
 
     public override void OnFrameworkInitializationCompleted()
     {
-        _tray = new TrayIcon { Icon = TrayIconArt.Render(0, false), ToolTipText = "Sandman", IsVisible = true };
+        _tray = new TrayIcon { Icon = TrayIconArt.Render(false), ToolTipText = "Sandman", IsVisible = true };
         TrayIcon.SetIcons(this, [_tray]);
 
         _controller = new TrayController(SynchronizationContext.Current ?? new AvaloniaSynchronizationContext());
@@ -38,10 +38,10 @@ public sealed class App : Application
 
     private void UpdateUi()
     {
-        var icon = (_controller.RunningCount, _controller.AnyEgressOpen);
+        var icon = _controller.RunningCount > 0;
         if (_lastIcon != icon)
         {
-            _tray.Icon = TrayIconArt.Render(icon.RunningCount, icon.AnyEgressOpen);
+            _tray.Icon = TrayIconArt.Render(icon);
             _lastIcon = icon;
         }
         _tray.ToolTipText = _controller.ToolTip;
