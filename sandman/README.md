@@ -22,6 +22,36 @@ It doesn't need bash, Python, `aca` or `az rest`. Only disk image builds stay in
 
 ## Install
 
+### Debian / Ubuntu / KDE neon (APT feed)
+
+The `sandman` package has `sbx` and the tray (`sandman`, started at login), self-contained: no .NET runtime needed.
+Updates arrive with `apt upgrade` and in KDE Discover. Once per machine:
+
+```sh
+base=https://github.com/kszicsillag/my-little-llm-sandbox/releases/download/sandman-apt
+sudo curl -fsSLo /usr/share/keyrings/sandman-archive-keyring.gpg $base/sandman-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/sandman-archive-keyring.gpg] $base/ ./" | sudo tee /etc/apt/sources.list.d/sandman.list
+sudo apt update && sudo apt install sandman
+```
+
+The package puts the `.sandbox/*.yaml` profiles next to `sbx` (`/usr/lib/sandman/.sandbox`), so `sbx up` works outside
+the repo too; a `.sandbox` folder in the current repo still takes precedence.
+
+Releasing: push a tag `sandman-v<version>` (e.g. `sandman-v0.2.0`). The [release workflow](../.github/workflows/sandman-release.yml)
+builds the amd64 and arm64 packages ([packaging/linux](packaging/linux)), attaches them to a release for the tag, and
+replaces the files of the rolling `sandman-apt` release, which apt reads as a flat repository. The repository is
+signed with the GPG key in the `SANDMAN_APT_SIGNING_KEY` secret. To create it (once; keep a backup, a new key means
+every machine re-downloads the keyring):
+
+```sh
+export GNUPGHOME=$(mktemp -d)
+gpg --batch --passphrase '' --quick-gen-key "Sandman APT <sandman@users.noreply.github.com>" ed25519 sign never
+gpg --armor --export-secret-keys | gh secret set SANDMAN_APT_SIGNING_KEY
+gpg --armor --export-secret-keys > sandman-apt-signing-key.asc   # backup: store it somewhere safe, not in the repo
+```
+
+### From source
+
 Publish into a directory on your `PATH`:
 
 ```sh

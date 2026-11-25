@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Sandman
+GenericName=ACA sandbox tray
+Comment=Azure Container Apps sandboxes in the system tray
+Exec=sandman
+Icon=sandman
+Terminal=false
+Categories=Development;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true

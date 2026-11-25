@@ -1,0 +1,55 @@
+# nfpm config for the sandman .deb (filled in by build-feed.sh via envsubst: ARCH, VERSION, BIN, ROOT, MAINTAINER,
+# HOMEPAGE). Self-contained binaries: no .NET runtime dependency.
+name: sandman
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: devel
+priority: optional
+maintainer: ${MAINTAINER}
+homepage: ${HOMEPAGE}
+description: |
+  ACA sandbox tools: the sbx CLI and the Sandman tray icon.
+  Manage Azure Container Apps sandboxes (up, shell, code, stop, resume, egress allow-all with
+  auto-lockdown) from the command line and the system tray (StatusNotifierItem).
+
+# .NET (self-contained) needs these; ICU is not listed because its package name changes with every version
+# (libicu74, libicu76, ...), and a KDE / Qt desktop always has it. The tray (Avalonia, X11) needs the X libs.
+depends:
+  - libc6
+  - libgcc-s1
+  - libstdc++6
+  - zlib1g
+  - libssl3t64 | libssl3
+  - libx11-6
+  - libice6
+  - libsm6
+  - libfontconfig1
+
+contents:
+  - src: ${BIN}/sbx
+    dst: /usr/lib/sandman/sbx
+    file_info: { mode: 0755 }
+  - src: ${BIN}/Sandman
+    dst: /usr/lib/sandman/Sandman
+    file_info: { mode: 0755 }
+  # sbx finds a .sandbox folder next to its executable (a .sandbox in the current repo still wins).
+  - src: ${ROOT}/.sandbox/*.yaml
+    dst: /usr/lib/sandman/.sandbox/
+    file_info: { mode: 0644 }
+  - src: /usr/lib/sandman/sbx
+    dst: /usr/bin/sbx
+    type: symlink
+  - src: /usr/lib/sandman/Sandman
+    dst: /usr/bin/sandman
+    type: symlink
+  - src: ${ROOT}/sandman/packaging/linux/sandman.desktop
+    dst: /usr/share/applications/sandman.desktop
+    file_info: { mode: 0644 }
+  # Start the tray at login (KDE: System Settings > Autostart can turn it off per user).
+  - src: ${ROOT}/sandman/packaging/linux/sandman.desktop
+    dst: /etc/xdg/autostart/sandman.desktop
+    file_info: { mode: 0644 }
+  - src: ${ROOT}/sandman/packaging/linux/sandman.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/sandman.svg
+    file_info: { mode: 0644 }

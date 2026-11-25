@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Same crescent as the tray icon: disc (32,32 r28) minus disc (46,22 r26), amber. -->
+  <mask id="bite">
+    <rect width="64" height="64" fill="#fff"/>
+    <circle cx="46" cy="22" r="26" fill="#000"/>
+  </mask>
+  <circle cx="32" cy="32" r="28" fill="#F5B731" mask="url(#bite)"/>
+</svg>

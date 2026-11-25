@@ -1,0 +1,83 @@
+name: sandman release
+
+# Push a tag sandman-v<version> (e.g. sandman-v0.1.0). This builds the sandman .deb packages (amd64, arm64),
+# attaches them to a release for that tag, and refreshes the rolling "sandman-apt" release, which apt (and KDE
+# Discover, via PackageKit) reads as a flat repository:
+#   deb [signed-by=/usr/share/keyrings/sandman-archive-keyring.gpg] https://github.com/<owner>/<repo>/releases/download/sandman-apt/ ./
+# A fixed tag rather than releases/latest: the feed doesn't move if the repo ever gets other releases.
+#
+# Needs the secret SANDMAN_APT_SIGNING_KEY: an ASCII-armored GPG secret key without passphrase (see sandman/README.md).
+on:
+  push:
+    tags: ["sandman-v*"]
+
+permissions:
+  contents: write
+
+concurrency: sandman-release
+
+env:
+  FEED_TAG: sandman-apt
+  NFPM_VERSION: "2.49.0"
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Tools
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/nfpm.deb" \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb"
+          sudo apt-get install -y "$RUNNER_TEMP/nfpm.deb" apt-utils gettext-base
+
+      - name: Signing key
+        env:
+          KEY: ${{ secrets.SANDMAN_APT_SIGNING_KEY }}
+        run: |
+          [ -n "$KEY" ] || { echo "::error::secret SANDMAN_APT_SIGNING_KEY is not set"; exit 1; }
+          printf '%s\n' "$KEY" | gpg --batch --import 2>&1 | grep -v '^gpg: key' || true
+          [ "$(gpg --list-secret-keys --with-colons | grep -c '^sec')" = 1 ] || { echo "::error::expected exactly one secret key"; exit 1; }
+
+      - name: Build
+        env:
+          MAINTAINER: "${{ github.repository_owner }} <${{ github.repository_owner }}@users.noreply.github.com>"
+          HOMEPAGE: "${{ github.server_url }}/${{ github.repository }}"
+        run: bash sandman/packaging/linux/build-feed.sh "${GITHUB_REF_NAME#sandman-v}" "$RUNNER_TEMP/out"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          feed="$RUNNER_TEMP/out/feed"
+          version="${GITHUB_REF_NAME#sandman-v}"
+          base="${{ github.server_url }}/${{ github.repository }}/releases/download/$FEED_TAG"
+
+          gh release create "$GITHUB_REF_NAME" "$feed"/*.deb --verify-tag \
+            --title "Sandman $version" --generate-notes
+
+          if ! gh release view "$FEED_TAG" >/dev/null 2>&1; then
+            cat > "$RUNNER_TEMP/notes.md" <<EOF
+          APT feed for Sandman (sbx CLI + tray). The files here are replaced on every release.
+
+          \`\`\`sh
+          sudo curl -fsSLo /usr/share/keyrings/sandman-archive-keyring.gpg $base/sandman-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/sandman-archive-keyring.gpg] $base/ ./" | sudo tee /etc/apt/sources.list.d/sandman.list
+          sudo apt update && sudo apt install sandman
+          \`\`\`
+          EOF
+            gh release create "$FEED_TAG" --target "$GITHUB_SHA" --latest=false \
+              --title "Sandman APT feed" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+
+          # Upload first (overwrite), then drop files of older versions: the feed is never empty.
+          gh release upload "$FEED_TAG" "$feed"/* --clobber
+          keep=$(cd "$feed" && ls)
+          gh release view "$FEED_TAG" --json assets -q '.assets[].name' | while read -r asset; do
+            grep -qxF "$asset" <<<"$keep" || gh release delete-asset "$FEED_TAG" "$asset" --yes
+          done
